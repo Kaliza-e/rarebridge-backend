@@ -368,7 +368,7 @@ The Google Sheets parser normalizes header variations automatically:
 
 ### Deploying to Render / Railway / Heroku
 
-1. **Build Command**: `npm install && npm run build`
+1. **Build Command**: `npm ci && npm run build`
 2. **Start Command**: `npm run start`
 3. **Environment Variables**:
    - `GOOGLE_SERVICE_ACCOUNT_KEY_JSON`: Paste the entire content of your Google Service Account JSON file as a single-line string.

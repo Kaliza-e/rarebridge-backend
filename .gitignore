@@ -1,0 +1,9 @@
+node_modules
+# Keep environment variables out of version control
+.env
+# Keep service account credentials out of version control
+service-account-key.json
+*.key.json
+
+/generated/prisma
+dist

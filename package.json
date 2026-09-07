@@ -4,8 +4,8 @@
   "description": "RareBridge API backend",
   "main": "dist/main.js",
   "scripts": {
-    "build": "nest build",
-    "start": "node dist/main.js",
+    "build": "tsc -p tsconfig.json",
+    "start": "npm run build && node dist/main.js",
     "dev": "nest start --watch",
     "test": "echo \"Error: no test specified\" && exit 1"
   },

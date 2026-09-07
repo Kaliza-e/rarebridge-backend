@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-const { google } = require('googleapis');
+import { google } from 'googleapis';
 
 @Injectable()
 export class GoogleSheetsService {

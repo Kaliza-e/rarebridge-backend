@@ -1,289 +1,394 @@
 # RareBridge Backend API
 
-A NestJS backend API for RareBridge - a rare disease knowledge platform. This backend provides RESTful endpoints for managing disease data, with support for importing data from Google Sheets.
+[![NestJS](https://img.shields.io/badge/NestJS-11.x-E0234E.svg?logo=nestjs&logoColor=white)](https://nestjs.com/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6.svg?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Google Sheets API](https://img.shields.io/badge/Google%20Sheets-v4-34A853.svg?logo=googlesheets&logoColor=white)](https://developers.google.com/sheets/api)
+[![License: ISC](https://img.shields.io/badge/License-ISC-blue.svg)](LICENSE)
 
-## Tech Stack
+A high-performance NestJS backend API powering **RareBridge** — a specialized rare disease intelligence and resource directory. The backend integrates with Google Sheets as a headless CMS, extracting raw medical data and rich hyperlinked spreadsheet content, parsing it into strongly typed JSON structures, and delivering it via cached REST endpoints.
 
-- **Framework**: NestJS
-- **ORM**: Prisma
-- **Database**: PostgreSQL
-- **Validation**: class-validator, class-transformer
-- **Google Sheets Integration**: googleapis
+---
 
-## Features
+## 📑 Table of Contents
 
-- CRUD operations for disease data
-- Search and filtering functionality
-- Google Sheets data import
-- Data validation and sanitization
-- Relational database structure with FAQs, facts/myths, specialists, and sources
+- [Architecture & Data Flow](#-architecture--data-flow)
+- [Key Features](#-key-features)
+- [Tech Stack](#-tech-stack)
+- [Project Structure](#-project-structure)
+- [Getting Started](#-getting-started)
+  - [Prerequisites](#1-prerequisites)
+  - [Installation](#2-installation)
+  - [Configuration](#3-environment-configuration)
+  - [Google Cloud Service Account Setup](#4-google-service-account-setup)
+- [Running the Application](#-running-the-application)
+- [API Reference](#-api-reference)
+  - [Get All Diseases & Search](#1-get-all-diseases--search)
+  - [Get Disease Categories](#2-get-disease-categories)
+  - [Get Disease by ID](#3-get-disease-by-id)
+  - [Get Disease by Number](#4-get-disease-by-disease-number)
+- [Spreadsheet Column Mapping](#-spreadsheet-column-mapping)
+- [Production Deployment](#-production-deployment)
+- [Troubleshooting](#-troubleshooting)
 
-## Database Schema
+---
 
-The database is structured based on the RareBridge Google Sheets template:
+## 🏗 Architecture & Data Flow
 
-### Disease Model
-- `diseaseNumber`: Unique identifier for the disease
-- `name`: Disease name
-- `category`: Disease category
-- `overview`: Disease overview
-- `causes`: Causes information
-- `typesAndSymptoms`: Types and symptoms
-- `diagnosis`: Diagnosis information
-- `lifestyleAndDailySupport`: Lifestyle and daily support
-- `treatmentsAndPharma`: Treatments and pharmaceutical information
+```mermaid
+flowchart LR
+    A[Google Sheets CMS] -->|Google Sheets API v4| B[GoogleSheetsService]
+    B -->|Extract Cells, Runs & Links| C[TextParser & ValidationService]
+    C -->|Sanitize & Validate Schema| D[In-Memory Cache (TTL: 5m)]
+    D -->|Filtered & Sorted| E[DiseaseService]
+    E -->|REST Response| F[Frontend / Client Application]
+```
 
-### Related Models
-- **FAQ**: Frequently asked questions for each disease
-- **FactMyth**: Facts vs myths for each disease
-- **Specialist**: Specialist directory entries
-- **Source**: Source/reference information
+1. **Extraction**: `GoogleSheetsService` queries Google Sheets API v4 using `spreadsheets.get` with full grid runs to preserve cell formatting, formula hyperlinks (`=HYPERLINK()`), and embedded markdown links.
+2. **Parsing & Sanitization**: `TextParser` uses smart regular expressions to break unstructured medical texts into structured models (arrays, diagnostic steps, lifestyle categories, deduplicated specialists, and facts/myths).
+3. **Validation**: `ValidationService` verifies required fields (`diseaseNumber`, `name`, `category`, `overview`) and provides sensible defaults for optional sections.
+4. **Caching**: Results are cached in memory for 5 minutes (`CACHE_TTL_MS = 300000`) to guarantee lightning-fast response times and prevent rate limit exhaustion.
 
-## Setup Instructions
+---
 
-### 1. Install Dependencies
+## ✨ Key Features
+
+- **Headless CMS via Google Sheets**: Manage disease catalogs, specialists, and clinical resources directly from Google Sheets without requiring SQL database migrations.
+- **Rich Hyperlink Extraction**: Preserves inline links from raw sheets text, formula hyperlinks, and rich text runs.
+- **Smart Natural Language Medical Parsing**:
+  - **Symptoms & Types**: Parses bullet points, numbers, and delimiters into clean string arrays.
+  - **Diagnostic Procedures**: Converts multi-step clinical descriptions into step-by-step diagnostic workflows (`name`, `what`, `how`, `result`).
+  - **Lifestyle & Daily Living**: Segregates raw text into distinct categories (`therapies`, `nutrition`, `devices`, `caregiverTips`, `community`).
+  - **Specialist Directory**: Parses formatted specialist profiles, normalizes contact/location/publications, and automatically deduplicates multiple specialist entries.
+  - **Facts vs. Myths**: Identifies myth/fact pairs, assigning boolean verification flags and clear explanations.
+  - **Clinical Research & Pharma**: Extracts pharmaceutical directory entries and research institutions.
+- **In-Memory Caching with TTL**: Automatic 5-minute cache ensures single-digit millisecond latency for repeat queries.
+- **Multi-Field Case-Insensitive Search**: Search effortlessly across disease names, categories, and overviews.
+
+---
+
+## 🛠 Tech Stack
+
+| Component | Technology | Description |
+|---|---|---|
+| **Framework** | [NestJS 11](https://nestjs.com/) | Progressive Node.js framework with Express platform |
+| **Language** | [TypeScript 5](https://www.typescriptlang.org/) | Strongly typed JavaScript |
+| **API Client** | [Google APIs (`googleapis`)](https://github.com/googleapis/google-api-nodejs-client) | Official Google Sheets v4 API client |
+| **Validation** | `class-validator` / `class-transformer` | DTO transformation and validation |
+| **Configuration** | `@nestjs/config` | Environment configuration management |
+
+---
+
+## 📁 Project Structure
+
+```
+rarebridge-backend/
+├── src/
+│   ├── app.module.ts              # Root NestJS application module
+│   ├── main.ts                   # Application bootstrap & global pipes
+│   ├── disease/                  # Disease management feature module
+│   │   ├── disease.controller.ts # REST API routing & query parameters
+│   │   ├── disease.module.ts     # Disease module wiring
+│   │   └── disease.service.ts    # Caching, search & query business logic
+│   ├── google-sheets/           # Google Sheets integration module
+│   │   ├── google-sheets.module.ts
+│   │   └── google-sheets.service.ts # Sheets v4 API client & rich text parser
+│   ├── parsing/                 # Parsing engine
+│   │   └── text-parser.util.ts   # Regex parsers for medical text blocks
+│   └── validation/              # Data sanitation & validation
+│       ├── validation.module.ts
+│       └── validation.service.ts # Data transformer & schema validator
+├── .env.example                  # Template environment variables
+├── .gitignore                    # Git ignore specifications
+├── package.json                  # NPM dependencies and scripts
+├── tsconfig.json                 # TypeScript compiler configuration
+└── README.md
+```
+
+---
+
+## 🚀 Getting Started
+
+### 1. Prerequisites
+
+- **Node.js** `>= 18.x`
+- **npm** `>= 9.x`
+- A Google Cloud Project with the **Google Sheets API** enabled.
+
+### 2. Installation
 
 ```bash
+# Clone the repository
+git clone https://github.com/Kaliza-e/rarebridge-backend.git
+cd rarebridge-backend
+
+# Install dependencies
 npm install
 ```
 
-### 2. Configure Environment Variables
+### 3. Environment Configuration
 
-Create a `.env` file in the root directory:
+Create a `.env` file in the project root:
+
+```bash
+cp .env.example .env
+```
+
+Populate the `.env` variables:
 
 ```env
-DATABASE_URL="postgresql://username:password@localhost:5432/rarebridge?schema=public"
-GOOGLE_SERVICE_ACCOUNT_KEY="./path/to/service-account-key.json"
+# Google Service Account Credentials
+# Option A: Single-line JSON (Recommended for cloud deployments like Render/Railway)
+GOOGLE_SERVICE_ACCOUNT_KEY_JSON={"type":"service_account","project_id":"your-project-id",...}
+
+# Option B: Path to JSON key file (Alternative for local development)
+# GOOGLE_SERVICE_ACCOUNT_KEY="./service-account-key.json"
+
+# Google Sheet Configuration
+GOOGLE_SPREADSHEET_ID=your_spreadsheet_id_here
+GOOGLE_SPREADSHEET_RANGE=Disease Information!A:Z
+
+# Server Port
+PORT=3000
 ```
 
-### 3. Set up PostgreSQL Database
+### 4. Google Service Account Setup
 
-Make sure you have PostgreSQL installed and running. Create a database:
+1. Go to the [Google Cloud Console](https://console.cloud.google.com/).
+2. Create or select a project, then navigate to **APIs & Services > Library** and enable **Google Sheets API**.
+3. Navigate to **APIs & Services > Credentials** and create a **Service Account**.
+4. Generate a new **JSON Key** for this Service Account and download it.
+5. Open your Google Sheet in your browser and click **Share**.
+6. Add the Service Account's email address (e.g. `your-service-account@project.iam.gserviceaccount.com`) as a **Viewer**.
 
-```sql
-CREATE DATABASE rarebridge;
-```
+---
 
-### 4. Run Prisma Migrations
+## 💻 Running the Application
 
 ```bash
-npm run prisma:migrate
-```
-
-This will create the database schema based on `prisma/schema.prisma`.
-
-### 5. Generate Prisma Client
-
-```bash
-npm run prisma:generate
-```
-
-### 6. Set up Google Sheets Integration (Optional)
-
-If you want to import data from Google Sheets:
-
-1. Create a Google Cloud project
-2. Enable Google Sheets API
-3. Create a service account
-4. Download the service account key JSON file
-5. Share your Google Sheet with the service account email
-6. Set the `GOOGLE_SERVICE_ACCOUNT_KEY` environment variable to the path of your key file
-
-## Running the Application
-
-### Development Mode
-
-```bash
+# Development mode (hot reload with ts-node)
 npm run dev
-```
 
-The API will be available at `http://localhost:3001`
-
-### Production Mode
-
-```bash
+# Production build
 npm run build
+
+# Start production server
 npm start
 ```
 
-## API Endpoints
+---
 
-### Diseases
+## 📡 API Reference
 
-#### Create Disease
-```http
-POST /diseases
-Content-Type: application/json
+Base URL: `http://localhost:3000` (or your deployed URL)
 
-{
-  "diseaseNumber": "RD001",
-  "name": "Krabbe Disease",
-  "category": "Metabolic Disorders",
-  "overview": "Krabbe disease is a rare genetic disorder...",
-  "causes": "Caused by mutations in the GALC gene...",
-  "typesAndSymptoms": "Symptoms include...",
-  "diagnosis": "Diagnosis is typically made through...",
-  "lifestyleAndDailySupport": "Daily management includes...",
-  "treatmentsAndPharma": "Treatment options include...",
-  "faqs": [
-    {
-      "question": "What is Krabbe disease?",
-      "answer": "Krabbe disease is...",
-      "order": 1
-    }
-  ],
-  "factsMyths": [
-    {
-      "statement": "Krabbe disease is contagious",
-      "isFact": false,
-      "explanation": "Krabbe disease is genetic...",
-      "order": 1
-    }
-  ],
-  "specialists": [
-    {
-      "name": "Dr. John Smith",
-      "organization": "Rare Disease Center",
-      "location": "New York, NY",
-      "contact": "john.smith@example.com",
-      "focus": "Metabolic disorders",
-      "why": "Specialized in rare genetic disorders"
-    }
-  ],
-  "sources": [
-    {
-      "title": "Krabbe Disease Foundation",
-      "url": "https://krabbe.org",
-      "type": "Organization",
-      "description": "Patient support organization"
-    }
-  ]
-}
-```
+### 1. Get All Diseases / Search
 
-#### Get All Diseases
 ```http
 GET /diseases
-GET /diseases?search=krabbe
-GET /diseases?category=Metabolic%20Disorders
 ```
 
-#### Get Disease by ID
-```http
-GET /diseases/:id
+#### Query Parameters
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `search` | `string` | No | Case-insensitive search matching against name, category, or overview |
+| `category` | `string` | No | Exact category filter |
+
+#### Example Requests
+- `GET /diseases`
+- `GET /diseases?search=krabbe`
+- `GET /diseases?category=Metabolic%20Disorders`
+
+#### Example Response
+```json
+[
+  {
+    "id": "RD001",
+    "diseaseNumber": "RD001",
+    "name": "Krabbe Disease",
+    "category": "Metabolic Disorders",
+    "overview": "Krabbe disease is a rare inherited disorder that destroys the protective myelin sheath...",
+    "causes": "Mutations in the GALC gene lead to a deficiency of galactosylceramidase.",
+    "typesAndSymptoms": [
+      "Irritability and unexplained crying",
+      "Muscle stiffness and spasms",
+      "Progressive developmental delays"
+    ],
+    "diagnosis": [
+      {
+        "name": "GALC Enzyme Activity Assay",
+        "what": "Measures galactosylceramidase enzyme levels",
+        "how": "White blood cell or skin fibroblast test",
+        "result": "Low or absent enzyme activity confirms diagnosis"
+      },
+      {
+        "name": "Genetic Sequencing",
+        "what": "Identifies mutations in the GALC gene",
+        "how": "DNA analysis from blood or saliva",
+        "result": "Identifies specific disease-causing mutations"
+      }
+    ],
+    "lifestyleAndDailySupport": {
+      "therapies": [
+        "Physical therapy to maintain muscle function",
+        "Occupational therapy for supportive daily care"
+      ],
+      "nutrition": "Tube feeding support when swallowing difficulties develop",
+      "devices": [
+        "Supportive seating",
+        "Mobility aids"
+      ],
+      "caregiverTips": [
+        "Establish structured sensory-friendly routines",
+        "Coordinate closely with a pediatric palliative care team"
+      ],
+      "community": "Krabbe Connect & United Leukodystrophy Foundation",
+      "raw": "..."
+    },
+    "treatmentsAndPharma": [
+      {
+        "name": "Hematopoietic Stem Cell Transplantation (HSCT)",
+        "focus": "Slows disease progression if performed pre-symptomatically",
+        "url": "https://example.org/treatments/hsct"
+      }
+    ],
+    "faqs": [
+      {
+        "question": "Is Krabbe disease inherited?",
+        "answer": "Yes, it is inherited in an autosomal recessive pattern.",
+        "order": 1
+      }
+    ],
+    "factsMyths": [
+      {
+        "statement": "Krabbe disease can be transmitted to others.",
+        "isFact": false,
+        "explanation": "Krabbe disease is a genetic condition caused by inherited mutations, not an infectious disease.",
+        "order": 1
+      }
+    ],
+    "specialists": [
+      {
+        "name": "Dr. Eleanor Vance, MD",
+        "profession": "Pediatric Neurologist",
+        "specialization": "Leukodystrophies",
+        "organization": "Children's Medical Center",
+        "location": "Boston, MA",
+        "contact": "contact@example.org",
+        "publications": "Innovations in Early Leukodystrophy Care (2024)",
+        "sources": [
+          "https://pubmed.ncbi.nlm.nih.gov/example"
+        ],
+        "focus": "Leukodystrophies",
+        "why": "Dr. Eleanor Vance, MD"
+      }
+    ],
+    "sources": [
+      {
+        "title": "National Organization for Rare Disorders (NORD)",
+        "url": "https://rarediseases.org/rare-diseases/krabbe-disease/",
+        "type": "Patient Organization",
+        "description": "NORD Rare Disease Database Report"
+      }
+    ]
+  }
+]
 ```
 
-#### Get Disease by Number
-```http
-GET /diseases/number/:diseaseNumber
-```
+---
 
-#### Update Disease
-```http
-PUT /diseases/:id
-Content-Type: application/json
+### 2. Get Disease Categories
 
-{
-  "name": "Updated Disease Name"
-}
-```
+Returns a unique, alphabetically sorted list of all categories.
 
-#### Delete Disease
-```http
-DELETE /diseases/:id
-```
-
-#### Get Categories
 ```http
 GET /diseases/categories
 ```
 
-### Import from Google Sheets
+#### Example Response
+```json
+[
+  "Autoimmune Disorders",
+  "Genetic Disorders",
+  "Metabolic Disorders",
+  "Neurological Disorders",
+  "Neuromuscular Disorders"
+]
+```
+
+---
+
+### 3. Get Disease by ID
+
+Finds a disease by `id` or `diseaseNumber`.
 
 ```http
-POST /diseases/import
-Content-Type: application/json
-
-{
-  "spreadsheetId": "your-spreadsheet-id",
-  "range": "Sheet1!A1:Z100"
-}
+GET /diseases/:id
 ```
 
-## Google Sheets Structure
+#### Example
+`GET /diseases/RD001`
 
-Your Google Sheet should follow this column structure:
+---
 
-1. Disease Number
-2. Name
-3. Category
-4. Overview
-5. Causes
-6. Types and Symptoms
-7. Diagnosis
-8. Lifestyle and Daily Support
-9. Treatments and Pharma
-10. FAQs for a disease (JSON array)
-11. Facts vs Myths (JSON array)
-12. Specialist Directory (JSON array)
-13. Sources (JSON array)
+### 4. Get Disease by Disease Number
 
-For nested data (FAQs, Facts/Myths, Specialists, Sources), you can either:
-- Store as JSON strings in the cells
-- Use separate sheets and reference them
-
-## Data Validation
-
-The API includes automatic data validation:
-- Required field validation
-- Data type validation
-- HTML/script tag sanitization
-- Nested data structure validation
-- Google Sheets data transformation
-
-## Development
-
-### Project Structure
-
-```
-src/
-├── app.module.ts              # Main application module
-├── main.ts                   # Application entry point
-├── disease/                  # Disease module
-│   ├── disease.controller.ts # API endpoints
-│   ├── disease.service.ts    # Business logic
-│   ├── disease.module.ts     # Module definition
-│   └── dto/                  # Data transfer objects
-│       ├── create-disease.dto.ts
-│       └── update-disease.dto.ts
-├── prisma/                  # Prisma module
-│   ├── prisma.service.ts     # Database service
-│   └── prisma.module.ts      # Module definition
-├── google-sheets/           # Google Sheets integration
-│   ├── google-sheets.service.ts
-│   └── google-sheets.module.ts
-└── validation/              # Data validation
-    ├── validation.service.ts
-    └── validation.module.ts
-prisma/
-├── schema.prisma            # Database schema
-└── migrations/              # Database migrations
+```http
+GET /diseases/number/:diseaseNumber
 ```
 
-## Troubleshooting
+#### Example
+`GET /diseases/number/RD001`
 
-### Prisma Client Issues
-If you encounter Prisma client issues:
-```bash
-npm run prisma:generate
-```
+---
 
-### Database Connection Issues
-Make sure your PostgreSQL is running and the DATABASE_URL is correct in your `.env` file.
+## 📊 Spreadsheet Column Mapping
 
-### Google Sheets Authentication
-Ensure your service account has the correct permissions and the sheet is shared with the service account email.
+The Google Sheets parser normalizes header variations automatically:
 
-## License
+| Spreadsheet Column Header Variations | Internal Model Field | Parsed Output Format |
+|---|---|---|
+| `Disease No.`, `Disease Number`, `Disease #`, `No.` | `diseaseNumber` | `string` |
+| `Disease Name`, `Name`, `Disease` | `name` | `string` |
+| `Category`, `Categories` | `category` | `string` |
+| `Overview`, `Description`, `Summary` | `overview` | `string` |
+| `Causes`, `Cause` | `causes` | `string` |
+| `Types and Symptoms`, `Symptoms`, `Types & Symptoms` | `typesAndSymptoms` | `string[]` |
+| `Diagnosis`, `Diagnostic`, `Diagnostics` | `diagnosis` | `DiagnosticStep[]` |
+| `Lifestyle and Daily Support+Community`, `Lifestyle` | `lifestyleAndDailySupport` | `LifestyleData` |
+| `Research and Pharma Directory`, `Treatments and Pharma` | `treatmentsAndPharma` | `ResearchOrg[]` |
+| `FAQs`, `FAQ`, `FAQs for a disease` | `faqs` | `ParsedFAQ[]` |
+| `Facts vs. Myths`, `Facts vs Myths`, `Fact vs Myth` | `factsMyths` | `ParsedFactMyth[]` |
+| `Specialist Directory`, `Specialists` | `specialists` | `ParsedSpecialist[]` |
+| `Sources`, `Source Directory` | `sources` | `Source[]` |
 
-ISC
+---
+
+## 🚢 Production Deployment
+
+### Deploying to Render / Railway / Heroku
+
+1. **Build Command**: `npm install && npm run build`
+2. **Start Command**: `npm run start`
+3. **Environment Variables**:
+   - `GOOGLE_SERVICE_ACCOUNT_KEY_JSON`: Paste the entire content of your Google Service Account JSON file as a single-line string.
+   - `GOOGLE_SPREADSHEET_ID`: Your Google Spreadsheet ID.
+   - `GOOGLE_SPREADSHEET_RANGE`: `Disease Information!A:Z` (or your desired sheet tab and range).
+   - `PORT`: (Set automatically by Render / Heroku).
+
+---
+
+## ❓ Troubleshooting
+
+- **Google Sheets 403 / Permission Denied**:
+  - Verify you shared your spreadsheet with the `client_email` listed in your Service Account JSON.
+- **Empty Data Returned**:
+  - Check that the `GOOGLE_SPREADSHEET_RANGE` matches the actual tab name in your spreadsheet (e.g. `Disease Information!A:Z`).
+- **Malformed Key JSON in Production**:
+  - Ensure the `GOOGLE_SERVICE_ACCOUNT_KEY_JSON` is valid JSON and not enclosed in extra surrounding quotes.
+
+---
+
+## 📄 License
+
+This project is licensed under the [ISC License](LICENSE).

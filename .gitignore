@@ -1,9 +1,18 @@
-node_modules
-# Keep environment variables out of version control
+# Dependencies
+node_modules/
+
+# Environment Variables
 .env
-# Keep service account credentials out of version control
+.env*.local
+
+# Service Account Keys
 service-account-key.json
 *.key.json
 
-/generated/prisma
-dist
+# Build Outputs & Cache
+dist/
+*.tsbuildinfo
+
+# OS Files
+.DS_Store
+Thumbs.db

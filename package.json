@@ -6,6 +6,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "npm run build && node dist/main.js",
+    "postinstall": "npm run build",
     "dev": "nest start --watch",
     "test": "echo \"Error: no test specified\" && exit 1"
   },

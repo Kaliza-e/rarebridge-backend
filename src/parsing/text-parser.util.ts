@@ -172,7 +172,7 @@ export function extractLinks(text: string): LinkItem[] {
       // Try to grab surrounding context as label (60 chars before URL)
       const before = text.substring(Math.max(0, match.index - 60), match.index).trim();
       const labelMatch = before.match(/(?:(?:official\s+)?website|link|source|profile|publication|clinical\s+trial|research)[\s:]*([A-Z0-9][^.!?\n]{2,40})$/i) ||
-                         before.match(/([A-Z][^.!?\n]{5,60})$/);
+        before.match(/([A-Z][^.!?\n]{5,60})$/);
       const label = labelMatch ? labelMatch[1].replace(/^(?:website|link|source|profile)[\s:]*/i, '').trim() : hostname;
       items.push({ url, label: label || hostname });
     }
@@ -344,11 +344,11 @@ export function parseLifestyleSection(text: string): LifestyleData {
     if (!line) continue;
 
     // Detect section headers
-    if (/^(therapies|therapy|treatments?)\s*:?$/i.test(line)) { currentSection = 'therapy'; continue; }
-    if (/^(nutrition|diet|eating|food)\s*:?$/i.test(line)) { currentSection = 'nutrition'; continue; }
-    if (/^(devices?|equipment|assistive)\s*:?$/i.test(line)) { currentSection = 'device'; continue; }
-    if (/^(caregiver|carer|family|tips?|advice)\s*:?$/i.test(line)) { currentSection = 'caregiver'; continue; }
-    if (/^(community|support group|organization)\s*:?$/i.test(line)) { currentSection = 'community'; continue; }
+    if (/^(therap(?:y|ies)|treatments?)\s*:?[\s]*$/i.test(line)) { currentSection = 'therapy'; continue; }
+    if (/^(nutrition|diet|eating|food)(?:\s+(?:and|&)\s+(?:diet|nutrition))?\s*:?[\s]*$/i.test(line)) { currentSection = 'nutrition'; continue; }
+    if (/^(devices?|equipment|assistive)(?:\s+(?:devices?|equipment))?\s*:?[\s]*$/i.test(line)) { currentSection = 'device'; continue; }
+    if (/^(caregiver|carer|family|tips?|advice)(?:\s+(?:tips?|advice))?\s*:?[\s]*$/i.test(line)) { currentSection = 'caregiver'; continue; }
+    if (/^(community|support group|organization|organisation)(?:\s+(?:and|&)\s+support)?\s*:?[\s]*$/i.test(line)) { currentSection = 'community'; continue; }
 
     // Classify by keyword if no explicit section
     if (THERAPY_KEYWORDS.test(line) && currentSection === 'other') {
@@ -372,17 +372,16 @@ export function parseLifestyleSection(text: string): LifestyleData {
     }
   }
 
-  const nutrition = nutritionLines.length > 0
-    ? nutritionLines.join(' ')
-    : otherLines.join(' ');
+  const nutrition = nutritionLines.join(' ');
+  const rawWithoutSections = otherLines.join(' ');
 
   return {
     therapies,
     nutrition: cleanText(nutrition),
     devices,
     caregiverTips,
-    community: communityLines.join(' '),
-    raw: text,
+    community: cleanText(communityLines.join(' ')),
+    raw: cleanText(rawWithoutSections),
   };
 }
 

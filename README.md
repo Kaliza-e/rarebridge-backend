@@ -63,6 +63,7 @@ flowchart LR
   - **Clinical Research & Pharma**: Extracts pharmaceutical directory entries and research institutions.
 - **In-Memory Caching with TTL**: Automatic 5-minute cache ensures single-digit millisecond latency for repeat queries.
 - **Multi-Field Case-Insensitive Search**: Search effortlessly across disease names, categories, and overviews.
+- **Document automation**: Discover Google Docs in a Drive folder, parse the disease template, validate each document, upsert by `diseaseNumber`, and return an import/error report.
 
 ---
 
@@ -149,6 +150,13 @@ GOOGLE_SPREADSHEET_RANGE=Disease Information!A:Z
 
 # Server Port
 PORT=3000
+
+# Automation source and scheduling
+GOOGLE_DRIVE_FOLDER_ID=your_drive_folder_id_here
+# Optional: run incremental sync every 30 minutes (milliseconds)
+AUTOMATION_INTERVAL_MS=1800000
+# Optional: require this header for automation endpoints
+AUTOMATION_API_KEY=change-me
 ```
 
 ### 4. Google Service Account Setup
@@ -159,6 +167,27 @@ PORT=3000
 4. Generate a new **JSON Key** for this Service Account and download it.
 5. Open your Google Sheet in your browser and click **Share**.
 6. Add the Service Account's email address (e.g. `your-service-account@project.iam.gserviceaccount.com`) as a **Viewer**.
+7. Share the source Drive folder with the same service account as a **Viewer**, and share the destination Sheet as an **Editor**.
+
+### Document template
+
+Each Google Doc in `GOOGLE_DRIVE_FOLDER_ID` should use labelled sections. Labels are case-insensitive and may be written as `Field: value` or as a heading followed by content:
+
+```text
+Disease Number: RB0001
+Disease Name: Batten Disease
+Category: Genetic Disorder
+Overview: Plain-language overview...
+Causes: ...
+Types and Symptoms: ...
+Diagnosis: ...
+Lifestyle and Daily Support: ...
+Treatments and Pharma: ...
+FAQs: ...
+Facts vs. Myths: ...
+Specialist Directory: ...
+Sources: ...
+```
 
 ---
 
@@ -339,6 +368,20 @@ GET /diseases/number/:diseaseNumber
 
 #### Example
 `GET /diseases/number/RD001`
+
+### 5. Run the document import pipeline
+
+```http
+POST /automation/import
+X-Automation-Key: change-me
+```
+
+The response includes processed, successful, failed, inserted, updated, and per-document validation errors. Re-running is safe: rows are matched by `diseaseNumber` and updated instead of duplicated.
+
+```http
+GET /automation/status
+X-Automation-Key: change-me
+```
 
 ---
 

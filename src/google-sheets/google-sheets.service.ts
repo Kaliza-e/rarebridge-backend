@@ -4,12 +4,18 @@ import { google } from 'googleapis';
 @Injectable()
 export class GoogleSheetsService {
   private sheets: any;
+  private drive: any;
+  private docs: any;
 
   constructor() {
     // Prefer inline JSON (production/Render) over key file path (local dev)
     const keyJson = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_JSON;
     const authConfig: any = {
-      scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+      scopes: [
+        'https://www.googleapis.com/auth/drive.readonly',
+        'https://www.googleapis.com/auth/documents.readonly',
+        'https://www.googleapis.com/auth/spreadsheets',
+      ],
     };
     if (keyJson) {
       authConfig.credentials = JSON.parse(keyJson);
@@ -18,6 +24,106 @@ export class GoogleSheetsService {
     }
     const auth = new google.auth.GoogleAuth(authConfig);
     this.sheets = google.sheets({ version: 'v4', auth });
+    this.drive = google.drive({ version: 'v3', auth });
+    this.docs = google.docs({ version: 'v1', auth });
+  }
+
+  async listGoogleDocs(folderId: string, modifiedAfter?: string) {
+    const clauses = [
+      `'${folderId}' in parents`,
+      "mimeType = 'application/vnd.google-apps.document'",
+      'trashed = false',
+    ];
+    if (modifiedAfter) clauses.push(`modifiedTime > '${modifiedAfter}'`);
+
+    const files: any[] = [];
+    let pageToken: string | undefined;
+    do {
+      const response = await this.drive.files.list({
+        q: clauses.join(' and '),
+        fields: 'nextPageToken,files(id,name,modifiedTime,webViewLink,md5Checksum)',
+        orderBy: 'modifiedTime asc',
+        pageSize: 1000,
+        pageToken,
+      });
+      files.push(...(response.data.files || []));
+      pageToken = response.data.nextPageToken || undefined;
+    } while (pageToken);
+    return files;
+  }
+
+  async getGoogleDoc(documentId: string) {
+    return this.docs.documents.get({ documentId });
+  }
+
+  async upsertDiseaseRows(
+    rows: Record<string, any>[],
+    spreadsheetId = process.env.SPREADSHEET_ID || process.env.GOOGLE_SPREADSHEET_ID || '',
+    range = process.env.SPREADSHEET_RANGE || process.env.GOOGLE_SPREADSHEET_RANGE || 'Disease Information!A:Z',
+  ) {
+    if (!spreadsheetId) throw new Error('Google Spreadsheet ID is not configured.');
+    if (!rows.length) return { inserted: 0, updated: 0 };
+
+    const headerResponse = await this.sheets.spreadsheets.values.get({ spreadsheetId, range });
+    const values = headerResponse.data.values || [];
+    if (!values.length) throw new Error(`Sheet range ${range} must contain a header row.`);
+
+    const headers = values[0].map((header: string) => this.mapHeaderToField(header));
+    const keyColumn = headers.indexOf('diseaseNumber');
+    if (keyColumn < 0) throw new Error('Sheet must contain a Disease Number column.');
+    const sheetName = range.split('!')[0].replace(/^'|'$/g, '');
+    const existing = new Map<string, number>();
+    values.slice(1).forEach((row: any[], index: number) => {
+      const key = String(row[keyColumn] || '').trim();
+      if (key) existing.set(key, index + 2);
+    });
+
+    const updates: any[] = [];
+    const inserts: any[][] = [];
+    let updated = 0;
+    for (const row of rows) {
+      const serialized = headers.map((header: string) => this.serializeSheetValue(row[header]));
+      const existingRow = existing.get(String(row.diseaseNumber).trim());
+      if (existingRow) {
+        updates.push({ range: `'${sheetName}'!A${existingRow}:${this.columnName(headers.length)}${existingRow}`, values: [serialized] });
+        updated++;
+      } else {
+        inserts.push(serialized);
+      }
+    }
+
+    if (updates.length) {
+      await this.sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId,
+        requestBody: { valueInputOption: 'RAW', data: updates },
+      });
+    }
+    if (inserts.length) {
+      await this.sheets.spreadsheets.values.append({
+        spreadsheetId,
+        range: `'${sheetName}'!A:${this.columnName(headers.length)}`,
+        valueInputOption: 'RAW',
+        insertDataOption: 'INSERT_ROWS',
+        requestBody: { values: inserts },
+      });
+    }
+    return { inserted: inserts.length, updated };
+  }
+
+  private serializeSheetValue(value: any): string {
+    if (value === undefined || value === null) return '';
+    return typeof value === 'string' ? value : JSON.stringify(value);
+  }
+
+  private columnName(columnNumber: number): string {
+    let result = '';
+    let n = columnNumber;
+    while (n > 0) {
+      const remainder = (n - 1) % 26;
+      result = String.fromCharCode(65 + remainder) + result;
+      n = Math.floor((n - 1) / 26);
+    }
+    return result;
   }
 
 

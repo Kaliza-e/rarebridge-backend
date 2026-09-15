@@ -45,6 +45,8 @@ export class GoogleSheetsService {
         orderBy: 'modifiedTime asc',
         pageSize: 1000,
         pageToken,
+        includeItemsFromAllDrives: true,
+        supportsAllDrives: true,
       });
       files.push(...(response.data.files || []));
       pageToken = response.data.nextPageToken || undefined;

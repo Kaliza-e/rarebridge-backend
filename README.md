@@ -153,8 +153,8 @@ PORT=3000
 
 # Automation source and scheduling
 GOOGLE_DRIVE_FOLDER_ID=your_drive_folder_id_here
-# Optional: run incremental sync every 30 minutes (milliseconds)
-AUTOMATION_INTERVAL_MS=1800000
+# Run incremental sync every 15 minutes (milliseconds); set to 0 to disable
+AUTOMATION_INTERVAL_MS=900000
 # Optional: require this header for automation endpoints
 AUTOMATION_API_KEY=change-me
 ```
@@ -171,22 +171,42 @@ AUTOMATION_API_KEY=change-me
 
 ### Document template
 
-Each Google Doc in `GOOGLE_DRIVE_FOLDER_ID` should use labelled sections. Labels are case-insensitive and may be written as `Field: value` or as a heading followed by content:
+Each Google Doc in `GOOGLE_DRIVE_FOLDER_ID` should use the revised disease template. Numbered Markdown headings (`### 1. Overview`) and labelled subheadings such as `Simple Explanation`, `Genetic Causes`, `What it is`, `Therapies`, `Myth`, and `Specialist Name` are supported. A `Disease Number` is optional; when omitted, the importer generates a stable `RBXXXXXXXX` identifier from the Google Doc ID.
 
 ```text
-Disease Number: RB0001
 Disease Name: Batten Disease
-Category: Genetic Disorder
-Overview: Plain-language overview...
-Causes: ...
-Types and Symptoms: ...
-Diagnosis: ...
-Lifestyle and Daily Support: ...
-Treatments and Pharma: ...
-FAQs: ...
-Facts vs. Myths: ...
-Specialist Directory: ...
-Sources: ...
+Category: Genetic, Metabolic
+
+### 1. Overview
+Simple Explanation: Plain-language overview...
+Medical Description: Clinical description...
+
+### 2. Causes
+Genetic Causes: ...
+Environmental Factors: ...
+Unknown Causes: ...
+
+### 3. Types & Symptoms
+Common Symptoms: ...
+
+### 4. Diagnosis
+Diagnostic Method Name
+•What it is: ...
+•How it works: ...
+•The result: ...
+
+### 5. Lifestyle & Daily Support + Community
+•Therapies: ...
+•Diets/Nutrition: ...
+
+### 6. Research & Pharma Directory
+•Pharma/Research Org Name: ...
+•Focus Area: ...
+•Official Website: ...
+
+### 7. Frequently Asked Questions (FAQs)
+### 8. Facts vs. Myths
+### 9. Specialists Directory
 ```
 
 ---
@@ -382,6 +402,15 @@ The response includes processed, successful, failed, inserted, updated, and per-
 GET /automation/status
 X-Automation-Key: change-me
 ```
+
+The status response includes the latest report and the most recent automation events. Recent events are also available directly:
+
+```http
+GET /automation/logs
+X-Automation-Key: change-me
+```
+
+Events include Drive discovery, document parsing, validation failures, Sheets writes, and pipeline errors. They record metadata only and do not log service-account credentials or document contents.
 
 ---
 

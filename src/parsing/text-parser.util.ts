@@ -266,7 +266,7 @@ export function parseDiagnosticSteps(text: string): DiagnosticStep[] {
       trimmed.length < 70 &&
       !trimmed.startsWith('•') &&
       !trimmed.startsWith('-') &&
-      !trimmed.match(/^(what|how|result|why|when|where)/i) &&
+      !trimmed.match(/^(what|how|result|the\s+result|why|when|where)/i) &&
       (trimmed.match(/^[A-Z]/) || trimmed.match(/^\d+[\.\)]/));
 
     if (isHeader && currentBlock.length > 0) {
@@ -284,8 +284,8 @@ export function parseDiagnosticSteps(text: string): DiagnosticStep[] {
     const rest = block.slice(1).join('\n');
 
     const whatMatch = rest.match(/(?:what it is|what)[:\-]\s*(.+?)(?=how|result|$)/is);
-    const howMatch = rest.match(/(?:how it works|how)[:\-]\s*(.+?)(?=result|what|$)/is);
-    const resultMatch = rest.match(/(?:what the result means|result)[:\-]\s*(.+?)$/is);
+    const howMatch = rest.match(/(?:how it works|how)[:\-]\s*(.+?)(?=the\s+result|result|what|$)/is);
+    const resultMatch = rest.match(/(?:what the result means|the result|result)[:\-]\s*(.+?)$/is);
 
     // Truncate long descriptions to keep it readable
     const whatText = whatMatch ? cleanText(whatMatch[1]) : cleanText(rest.split('\n')[0] || '');
@@ -343,12 +343,26 @@ export function parseLifestyleSection(text: string): LifestyleData {
     const line = cleanLine(rawLine);
     if (!line) continue;
 
-    // Detect section headers
+    // Detect labelled section headers, including the revised document template.
+    const therapyValue = line.match(/^(?:therap(?:y|ies)|treatments?)\s*:\s*(.*)$/i);
+    if (therapyValue) { currentSection = 'therapy'; if (therapyValue[1]) therapies.push(therapyValue[1].trim()); continue; }
     if (/^(therap(?:y|ies)|treatments?)\s*:?[\s]*$/i.test(line)) { currentSection = 'therapy'; continue; }
-    if (/^(nutrition|diet|eating|food)(?:\s+(?:and|&)\s+(?:diet|nutrition))?\s*:?[\s]*$/i.test(line)) { currentSection = 'nutrition'; continue; }
+
+    const nutritionValue = line.match(/^(?:diets?\s*\/\s*nutrition|nutrition|diet|eating|food)\s*:\s*(.*)$/i);
+    if (nutritionValue) { currentSection = 'nutrition'; if (nutritionValue[1]) nutritionLines.push(nutritionValue[1].trim()); continue; }
+    if (/^(?:diets?\s*\/\s*nutrition|nutrition|diet|eating|food)(?:\s+(?:and|&)\s+(?:diet|nutrition))?\s*:?[\s]*$/i.test(line)) { currentSection = 'nutrition'; continue; }
+
+    const deviceValue = line.match(/^(?:assistive\s+devices?|devices?|equipment|assistive)\s*:\s*(.*)$/i);
+    if (deviceValue) { currentSection = 'device'; if (deviceValue[1]) devices.push(deviceValue[1].trim()); continue; }
     if (/^(devices?|equipment|assistive)(?:\s+(?:devices?|equipment))?\s*:?[\s]*$/i.test(line)) { currentSection = 'device'; continue; }
-    if (/^(caregiver|carer|family|tips?|advice)(?:\s+(?:tips?|advice))?\s*:?[\s]*$/i.test(line)) { currentSection = 'caregiver'; continue; }
-    if (/^(community|support group|organization|organisation)(?:\s+(?:and|&)\s+support)?\s*:?[\s]*$/i.test(line)) { currentSection = 'community'; continue; }
+
+    const caregiverValue = line.match(/^(?:daily\s+care\s+tips|caregiver\s+tips|caregiver|carer|family|tips?|advice)\s*:\s*(.*)$/i);
+    if (caregiverValue) { currentSection = 'caregiver'; if (caregiverValue[1]) caregiverTips.push(caregiverValue[1].trim()); continue; }
+    if (/^(?:daily\s+care\s+tips|caregiver\s+tips|caregiver|carer|family|tips?|advice)(?:\s+(?:tips?|advice))?\s*:?[\s]*$/i.test(line)) { currentSection = 'caregiver'; continue; }
+
+    const communityValue = line.match(/^(?:community\s+links|community|support group|organization|organisation)\s*:\s*(.*)$/i);
+    if (communityValue) { currentSection = 'community'; if (communityValue[1]) communityLines.push(communityValue[1].trim()); continue; }
+    if (/^(?:community\s+links|community)(?:\s+(?:and|&)\s+support)?\s*:?[\s]*$/i.test(line)) { currentSection = 'community'; continue; }
 
     // Classify by keyword if no explicit section
     if (THERAPY_KEYWORDS.test(line) && currentSection === 'other') {
@@ -427,6 +441,29 @@ export function parseResearchOrgs(text: string): ResearchOrg[] {
     const cleaned = cleanLine(lineNoUrl);
 
     if (!cleaned && !url) continue;
+
+    // Revised template labels: keep the research organization record together
+    // while converting the labelled fields into the existing normalized model.
+    const orgName = cleaned.match(/^(?:pharma\/research\s+org(?:anization)?\s+name|research\s+org(?:anization)?\s+name|org(?:anization)?\s+name)\s*:\s*(.+)$/i);
+    if (orgName) {
+      if (currentName || currentFocusLines.length > 0) flushOrg();
+      currentName = orgName[1].trim();
+      continue;
+    }
+    const focus = cleaned.match(/^(?:focus\s+area|focus)\s*:\s*(.*)$/i);
+    if (focus) {
+      if (focus[1]) currentFocusLines.push(focus[1].trim());
+      continue;
+    }
+    if (/^official\s+website\s*:/i.test(cleaned)) {
+      if (url) currentUrl = url;
+      continue;
+    }
+    const whyFollow = cleaned.match(/^why\s+follow\s+them\s*:\s*(.*)$/i);
+    if (whyFollow?.[1]) {
+      currentFocusLines.push(whyFollow[1].trim());
+      continue;
+    }
 
     // Detect if this line looks like an org header
     const looksLikeOrgHeader =
@@ -536,7 +573,7 @@ export function parseFactsMyths(text: string): ParsedFactMyth[] {
 
   let i = 0;
   while (i < lines.length) {
-    const line = lines[i];
+    const line = cleanLine(lines[i]);
     const isMythLine = /^myth[\s:]/i.test(line) || /\bit is (?:not true|false|a myth)\b/i.test(line);
     const isFactLine = /^fact[\s:]/i.test(line) || /\bit is (?:true|a fact|correct)\b/i.test(line);
     const isTrueLabel = /^(true|correct|fact)\s*$/i.test(line);
@@ -551,8 +588,8 @@ export function parseFactsMyths(text: string): ParsedFactMyth[] {
 
       // Look ahead for explanation
       let explanation = '';
-      if (i + 1 < lines.length && !/^(myth|fact|true|false)/i.test(lines[i + 1])) {
-        explanation = cleanText(lines[i + 1]);
+      if (i + 1 < lines.length && !/^(?:myth|fact|true|false)/i.test(cleanLine(lines[i + 1]))) {
+        explanation = cleanText(cleanLine(lines[i + 1]).replace(/^(?:explanation|details?)\s*:\s*/i, ''));
         i++;
       }
 

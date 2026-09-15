@@ -64,6 +64,7 @@ flowchart LR
 - **In-Memory Caching with TTL**: Automatic 5-minute cache ensures single-digit millisecond latency for repeat queries.
 - **Multi-Field Case-Insensitive Search**: Search effortlessly across disease names, categories, and overviews.
 - **Document automation**: Discover Google Docs in a Drive folder, parse the disease template, validate each document, upsert by `diseaseNumber`, and return an import/error report.
+- **Readable Sheets output**: Structured fields are written as multiline, labelled cells instead of JSON blobs, while remaining compatible with the backend's spreadsheet parser.
 
 ---
 

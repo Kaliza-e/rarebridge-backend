@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { google } from 'googleapis';
+import { formatSheetValue } from './sheet-format.util';
 
 @Injectable()
 export class GoogleSheetsService {
@@ -84,7 +85,7 @@ export class GoogleSheetsService {
     const inserts: any[][] = [];
     let updated = 0;
     for (const row of rows) {
-      const serialized = headers.map((header: string) => this.serializeSheetValue(row[header]));
+      const serialized = headers.map((header: string) => this.serializeSheetValue(row[header], header));
       const existingRow = existing.get(String(row.diseaseNumber).trim());
       if (existingRow) {
         updates.push({ range: `'${sheetName}'!A${existingRow}:${this.columnName(headers.length)}${existingRow}`, values: [serialized] });
@@ -112,9 +113,8 @@ export class GoogleSheetsService {
     return { inserted: inserts.length, updated };
   }
 
-  private serializeSheetValue(value: any): string {
-    if (value === undefined || value === null) return '';
-    return typeof value === 'string' ? value : JSON.stringify(value);
+  private serializeSheetValue(value: any, field: string): string {
+    return formatSheetValue(value, field);
   }
 
   private columnName(columnNumber: number): string {

@@ -635,8 +635,31 @@ export function parseFactsMyths(text: string): ParsedFactMyth[] {
 export function parseSpecialists(text: string): ParsedSpecialist[] {
   if (!text || typeof text !== 'string') return [];
 
-  // Step 1: Split raw text into per-specialist blocks using "Specialist Name:" boundary marker
-  const blockSeparatorRegex = /(?:^|[\n\r•▪▸►*–—\-]\s*)Specialist\s+Name\s*:/gi;
+  // Check if text is JSON
+  if (text.trim().startsWith('[') || text.trim().startsWith('{')) {
+    try {
+      const parsed = JSON.parse(text);
+      const arr = Array.isArray(parsed) ? parsed : [parsed];
+      return arr.map(item => ({
+        name: item.name || item.specialistName || 'Specialist',
+        profession: item.profession || item.role || item.title || '',
+        specialization: item.specialization || item.specialty || item.expertise || '',
+        organization: item.organization || item.institution || item.hospital || '',
+        location: item.location || item.city || '',
+        contact: item.contact || item.phone || item.email || null,
+        publications: item.publications || item.recentPublications || '',
+        sources: Array.isArray(item.sources) ? item.sources : (item.sources ? [item.sources] : []),
+        focus: item.specialization || item.profession || item.focus || 'Rare Disease Specialist',
+        why: item.name || 'Specialist',
+      }));
+    } catch {
+      // Fall through to text parsing
+    }
+  }
+
+  // Step 1: Split raw text into per-specialist blocks
+  // Matches "Specialist Name:", "### Specialist Name", "1. Specialist Name:", "Specialist:", "Doctor:", "Name:"
+  const blockSeparatorRegex = /(?:^|[\r\n]+)\s*(?:#{1,6}\s+)?(?:(?:\d+[\.\)]|[•▪▸►*–—\-])\s*)?(?:Specialist\s+Name|Specialist(?!\s+(?:Directory|Section|Information))|Doctor|Physician|Name)\s*[:\-–—]/gi;
   const positions: number[] = [];
   let match: RegExpExecArray | null;
 
@@ -647,7 +670,7 @@ export function parseSpecialists(text: string): ParsedSpecialist[] {
   let rawSpecialists: ParsedSpecialist[] = [];
 
   if (positions.length === 0) {
-    // No "Specialist Name:" found — fall back to legacy parsing
+    // Fall back to legacy / line-by-line parsing
     rawSpecialists = parseSpecialistsLegacy(text);
   } else {
     for (let i = 0; i < positions.length; i++) {
@@ -660,6 +683,11 @@ export function parseSpecialists(text: string): ParsedSpecialist[] {
         rawSpecialists.push(specialist);
       }
     }
+  }
+
+  // If still empty, try legacy
+  if (rawSpecialists.length === 0) {
+    rawSpecialists = parseSpecialistsLegacy(text);
   }
 
   // Step 2: Deduplicate and merge profiles for the same specialist
@@ -678,23 +706,23 @@ interface RawSpecialistFields {
 }
 
 /**
- * Parse a single specialist block (starting with "Specialist Name:").
+ * Parse a single specialist block.
  * Matches each known label and extracts the value up to the next label or end of block.
  */
 function parseSpecialistBlock(block: string): ParsedSpecialist | null {
   const LABELS: { key: keyof RawSpecialistFields; patterns: string[] }[] = [
-    { key: 'name', patterns: ['Specialist Name', 'Name'] },
-    { key: 'profession', patterns: ['Profession', 'Position', 'Role'] },
-    { key: 'specialization', patterns: ['Specialization', 'Speciality', 'Specialty', 'Expertise'] },
-    { key: 'organization', patterns: ['Organization', 'Organisation', 'Hospital', 'Institution', 'Affiliation', 'Medical Center'] },
-    { key: 'location', patterns: ['Location', 'Address', 'City'] },
-    { key: 'contact', patterns: ['Contact Information', 'Contact', 'Phone', 'Email'] },
-    { key: 'publications', patterns: ['Recent Publications', 'Publications', 'Research'] },
-    { key: 'sources', patterns: ['Sources', 'Source'] },
+    { key: 'name', patterns: ['Specialist Name', 'Doctor Name', 'Doctor', 'Physician', 'Specialist', 'Name'] },
+    { key: 'profession', patterns: ['Profession', 'Position', 'Role', 'Title', 'Occupation'] },
+    { key: 'specialization', patterns: ['Specialization', 'Speciality', 'Specialty', 'Expertise', 'Clinical Focus', 'Subspecialty', 'Focus Area'] },
+    { key: 'organization', patterns: ['Organization', 'Organisation', 'Hospital', 'Institution', 'Affiliation', 'Medical Center', 'Clinic', 'University', 'Center', 'Centre'] },
+    { key: 'location', patterns: ['Location', 'Address', 'City', 'State', 'Country'] },
+    { key: 'contact', patterns: ['Contact Information', 'Contact Info', 'Contact', 'Phone', 'Email', 'Website', 'Tel', 'Telephone'] },
+    { key: 'publications', patterns: ['Recent Publications', 'Publications', 'Research', 'Key Publications', 'Selected Publications', 'Papers'] },
+    { key: 'sources', patterns: ['Sources', 'Source', 'References', 'Reference'] },
   ];
 
   const allPatterns = LABELS.flatMap(l => l.patterns).join('|');
-  const labelRe = new RegExp(`(?:^|[\\n\\r•▪▸►*–—\\-]\\s*)(${allPatterns})\\s*:`, 'gi');
+  const labelRe = new RegExp(`(?:^|[\\n\\r•▪▸►*–—\\-]\\s*)(?:#{1,6}\\s*)?(${allPatterns})\\s*[:\\-–—]`, 'gi');
 
   interface LabelPos { key: keyof RawSpecialistFields; start: number; valueStart: number }
   const found: LabelPos[] = [];
@@ -895,12 +923,21 @@ function parseSpecialistsLegacy(text: string): ParsedSpecialist[] {
   const results: ParsedSpecialist[] = [];
   const lines = splitLines(text);
 
+  let currentSpec: Partial<ParsedSpecialist> | null = null;
+
   for (const rawLine of lines) {
     const line = cleanLine(rawLine);
-    if (!line || line.length < 4) continue;
+    if (!line || line.length < 3) continue;
+
+    // Check if line starts a new specialist by "Dr." or "Prof." or title
+    const isDoctorStart = /^(?:dr\.?|doctor|prof\.?|professor)\s+[A-Z]/i.test(line);
 
     const pipeParts = line.split(/\s*\|\s*/);
     if (pipeParts.length >= 2) {
+      if (currentSpec && currentSpec.name) {
+        results.push(currentSpec as ParsedSpecialist);
+        currentSpec = null;
+      }
       const name = pipeParts[0]?.trim() || 'Specialist';
       results.push({
         name,
@@ -917,23 +954,47 @@ function parseSpecialistsLegacy(text: string): ParsedSpecialist[] {
       continue;
     }
 
-    const commaParts = line.split(/\s*[,\-]\s*/).filter(Boolean);
-    if (commaParts.length >= 2 && /^Dr\.?/i.test(commaParts[0])) {
-      const name = commaParts[0]?.trim() || 'Specialist';
-      results.push({
-        name,
-        profession: '',
-        specialization: commaParts[3]?.trim() || '',
+    if (isDoctorStart) {
+      if (currentSpec && currentSpec.name) {
+        results.push(currentSpec as ParsedSpecialist);
+      }
+      const commaParts = line.split(/\s*[,\-]\s*/).filter(Boolean);
+      currentSpec = {
+        name: commaParts[0]?.trim() || line,
+        profession: commaParts[1]?.trim() || '',
+        specialization: commaParts[3]?.trim() || commaParts[2]?.trim() || '',
         organization: commaParts[1]?.trim() || '',
         location: commaParts[2]?.trim() || '',
         contact: null,
         publications: '',
         sources: [],
-        focus: commaParts[3]?.trim() || 'Rare Disease Specialist',
+        focus: commaParts[3]?.trim() || commaParts[2]?.trim() || 'Rare Disease Specialist',
         why: line,
-      });
+      };
       continue;
     }
+
+    // Accumulate into currentSpec if exists
+    if (currentSpec) {
+      if (/^(?:profession|role|position)\s*:\s*(.*)$/i.test(line)) {
+        currentSpec.profession = line.replace(/^(?:profession|role|position)\s*:\s*/i, '').trim();
+      } else if (/^(?:specialization|specialty|expertise)\s*:\s*(.*)$/i.test(line)) {
+        currentSpec.specialization = line.replace(/^(?:specialization|specialty|expertise)\s*:\s*/i, '').trim();
+        currentSpec.focus = currentSpec.specialization;
+      } else if (/^(?:organization|institution|hospital)\s*:\s*(.*)$/i.test(line)) {
+        currentSpec.organization = line.replace(/^(?:organization|institution|hospital)\s*:\s*/i, '').trim();
+      } else if (/^(?:location|address|city)\s*:\s*(.*)$/i.test(line)) {
+        currentSpec.location = line.replace(/^(?:location|address|city)\s*:\s*/i, '').trim();
+      } else if (/^(?:contact|phone|email)\s*:\s*(.*)$/i.test(line)) {
+        currentSpec.contact = line.replace(/^(?:contact|phone|email)\s*:\s*/i, '').trim();
+      } else if (/^(?:publications?|research)\s*:\s*(.*)$/i.test(line)) {
+        currentSpec.publications = line.replace(/^(?:publications?|research)\s*:\s*/i, '').trim();
+      }
+    }
+  }
+
+  if (currentSpec && currentSpec.name) {
+    results.push(currentSpec as ParsedSpecialist);
   }
 
   return results;

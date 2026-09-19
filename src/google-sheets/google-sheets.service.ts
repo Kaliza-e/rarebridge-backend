@@ -257,19 +257,32 @@ export class GoogleSheetsService {
   }
 
   private mapHeaderToField(header: string): string {
+    if (!header || typeof header !== 'string') return '';
+
+    const cleaned = header
+      .replace(/^\s*#+\s*/, '')
+      .replace(/^\s*\d+[.)]?\s*/, '')
+      .replace(/^[•·▪▸►→\-–—*]\s*/, '')
+      .replace(/\s*:.*$/, '')
+      .trim()
+      .toLowerCase()
+      .replace(/&/g, ' and ')
+      .replace(/\+/g, ' and ')
+      .replace(/[\/]/g, ' ')
+      .replace(/[.,()]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
     const headerMap: { [key: string]: string } = {
       // Disease No.
-      'disease no.': 'diseaseNumber',
       'disease no': 'diseaseNumber',
       'disease number': 'diseaseNumber',
-      'disease #': 'diseaseNumber',
-      'no.': 'diseaseNumber',
+      'disease': 'diseaseNumber',
       'no': 'diseaseNumber',
 
       // Disease name
       'disease name': 'name',
       'name': 'name',
-      'disease': 'name',
 
       // Category
       'category': 'category',
@@ -279,67 +292,100 @@ export class GoogleSheetsService {
       'overview': 'overview',
       'description': 'overview',
       'summary': 'overview',
+      'simple explanation': 'overview',
+      'medical description': 'overview',
 
       // Causes
       'causes': 'causes',
       'cause': 'causes',
+      'genetic causes': 'causes',
+      'environmental factors': 'causes',
+      'unknown causes': 'causes',
 
       // Types and symptoms
       'types and symptoms': 'typesAndSymptoms',
-      'types & symptoms': 'typesAndSymptoms',
-      'causes, types and symptoms': 'typesAndSymptoms',
-      'causes, types & symptoms': 'typesAndSymptoms',
+      'causes types and symptoms': 'typesAndSymptoms',
       'symptoms': 'typesAndSymptoms',
       'types': 'typesAndSymptoms',
+      'common symptoms': 'typesAndSymptoms',
 
       // Diagnosis
       'diagnosis': 'diagnosis',
       'diagnostic': 'diagnosis',
       'diagnostics': 'diagnosis',
+      'diagnostic methods': 'diagnosis',
 
       // Lifestyle and daily support + community
-      'lifestyle and daily support+community': 'lifestyleAndDailySupport',
-      'lifestyle and daily support + community': 'lifestyleAndDailySupport',
+      'lifestyle and daily support and community': 'lifestyleAndDailySupport',
+      'lifestyle and daily support community': 'lifestyleAndDailySupport',
       'lifestyle and daily support': 'lifestyleAndDailySupport',
-      'lifestyle & daily support + community': 'lifestyleAndDailySupport',
-      'lifestyle & daily support': 'lifestyleAndDailySupport',
+      'lifestyle and support': 'lifestyleAndDailySupport',
       'lifestyle': 'lifestyleAndDailySupport',
 
-      // Research and pharma directory
-      'research and pharma directory': 'treatmentsAndPharma',
-      'research & pharma directory': 'treatmentsAndPharma',
-      'research and pharma': 'treatmentsAndPharma',
-      'research & pharma': 'treatmentsAndPharma',
-      'treatments and pharma': 'treatmentsAndPharma',
+      // Research and pharma directory / Treatments & Research Directory
+      'treatments and research directory': 'treatmentsAndPharma',
+      'treatments and research': 'treatmentsAndPharma',
       'treatments and pharma directory': 'treatmentsAndPharma',
+      'treatments and pharma': 'treatmentsAndPharma',
+      'research and pharma directory': 'treatmentsAndPharma',
+      'research and pharma': 'treatmentsAndPharma',
+      'research directory': 'treatmentsAndPharma',
       'research': 'treatmentsAndPharma',
+      'pharma directory': 'treatmentsAndPharma',
+      'treatments': 'treatmentsAndPharma',
 
       // FAQs
       'faqs': 'faqs',
       'faq': 'faqs',
       'faqs for a disease': 'faqs',
       'faq for a disease': 'faqs',
+      'frequently asked questions': 'faqs',
+      'frequently asked questions faqs': 'faqs',
 
       // Facts vs. Myths
-      'facts vs. myths': 'factsMyths',
       'facts vs myths': 'factsMyths',
-      'fact vs. myth': 'factsMyths',
       'fact vs myth': 'factsMyths',
-      'facts vs. myths.': 'factsMyths',
       'facts and myths': 'factsMyths',
+      'myths and facts': 'factsMyths',
+      'facts': 'factsMyths',
+      'myths': 'factsMyths',
 
       // Specialist directory
       'specialist directory': 'specialists',
       'specialists directory': 'specialists',
       'specialist': 'specialists',
       'specialists': 'specialists',
+      'specialist directory and contacts': 'specialists',
+      'specialist directory contacts': 'specialists',
+      'specialist information': 'specialists',
+      'specialists information': 'specialists',
       'speacislist directory': 'specialists', // typo fallback
+      'doctors': 'specialists',
+      'physicians': 'specialists',
 
       // Sources
       'sources': 'sources',
       'source': 'sources',
       'source directory': 'sources',
+      'references': 'sources',
+      'reference': 'sources',
     };
+
+    if (headerMap[cleaned]) return headerMap[cleaned];
+
+    // Fallback keyword matching
+    if (cleaned.includes('specialist') || cleaned.includes('doctor') || cleaned.includes('physician')) return 'specialists';
+    if (cleaned.includes('treatment') || cleaned.includes('pharma') || cleaned.includes('research org')) return 'treatmentsAndPharma';
+    if (cleaned.includes('myth') || cleaned.includes('fact')) return 'factsMyths';
+    if (cleaned.includes('faq') || cleaned.includes('frequently asked')) return 'faqs';
+    if (cleaned.includes('source') || cleaned.includes('reference')) return 'sources';
+    if (cleaned.includes('lifestyle') || cleaned.includes('daily support')) return 'lifestyleAndDailySupport';
+    if (cleaned.includes('diagnos')) return 'diagnosis';
+    if (cleaned.includes('symptom')) return 'typesAndSymptoms';
+    if (cleaned.includes('cause')) return 'causes';
+    if (cleaned.includes('overview') || cleaned.includes('summary')) return 'overview';
+    if (cleaned.includes('name')) return 'name';
+    if (cleaned.includes('category')) return 'category';
 
     const normalizedHeader = header.toLowerCase().replace(/\s+/g, ' ').trim();
     return headerMap[normalizedHeader] || normalizedHeader;

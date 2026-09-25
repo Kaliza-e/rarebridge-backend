@@ -23,8 +23,11 @@ const FIELD_ALIASES: Record<string, string> = {
   diagnosis: 'diagnosis',
   'specialists involved': 'diagnosis',
   'lifestyle and daily support community': 'lifestyleAndDailySupport',
+  'lifestyle and daily supoort community': 'lifestyleAndDailySupport',
   'lifestyle and daily support and community': 'lifestyleAndDailySupport',
+  'lifestyle and daily supoort and community': 'lifestyleAndDailySupport',
   'lifestyle and daily support': 'lifestyleAndDailySupport',
+  'lifestyle and daily supoort': 'lifestyleAndDailySupport',
   lifestyle: 'lifestyleAndDailySupport',
   therapies: 'lifestyleAndDailySupport',
   'diets nutrition': 'lifestyleAndDailySupport',
@@ -40,8 +43,8 @@ const FIELD_ALIASES: Record<string, string> = {
   faqs: 'faqs',
   'frequently asked questions faqs': 'faqs',
   'facts vs myths': 'factsMyths',
-  'myth': 'factsMyths',
-  'fact': 'factsMyths',
+  myth: 'factsMyths',
+  fact: 'factsMyths',
   specialists: 'specialists',
   'specialist directory': 'specialists',
   'specialists directory': 'specialists',
@@ -55,7 +58,7 @@ const FIELD_ALIASES: Record<string, string> = {
   sources: 'sources',
 };
 
-function normalizeHeading(value: string): string {
+export function normalizeHeading(value: string): string {
   return value
     .replace(/^\s*#+\s*/, '')
     .replace(/^\s*\d+[.)]?\s*/, '')
@@ -71,12 +74,85 @@ function normalizeHeading(value: string): string {
     .trim();
 }
 
+/**
+ * Normalizes disease name for robust duplicate detection & comparison.
+ * Trims spaces, converts to lowercase, normalizes Unicode, strips punctuation.
+ */
+export function normalizeDiseaseName(name: string): string {
+  if (!name) return '';
+  return name
+    .toLowerCase()
+    .normalize('NFC')
+    .replace(/^[\s\d.#\-+]+/, '') // strip leading bullet/number prefixes
+    .replace(/['"’`]/g, '') // strip quotes/apostrophes
+    .replace(/[^a-z0-9\s]/g, ' ') // convert remaining punctuation to spaces
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Generates a stable canonical slug for a disease name (e.g., "gaucher-disease").
+ */
+export function createCanonicalDiseaseSlug(name: string): string {
+  const normalized = normalizeDiseaseName(name);
+  return normalized.replace(/\s+/g, '-');
+}
+
+/**
+ * Extracts Google Doc text while preserving formatting (Hyperlinks, Red Text, Bold, Italic, Lists).
+ */
 export function extractGoogleDocText(document: any): string {
+  const extractTextRun = (textRun: any): string => {
+    let content = textRun?.content || '';
+    if (!content) return '';
+
+    const textStyle = textRun?.textStyle || {};
+    const linkUrl = textStyle.link?.url;
+    const fgColor = textStyle.foregroundColor?.color?.rgbColor;
+
+    // Is text red? (red >= 0.6 and green < 0.4 and blue < 0.4)
+    const isRed = fgColor && fgColor.red !== undefined && (fgColor.red > 0.6) && (fgColor.green === undefined || fgColor.green < 0.4) && (fgColor.blue === undefined || fgColor.blue < 0.4);
+
+    const isBold = Boolean(textStyle.bold);
+    const isItalic = Boolean(textStyle.italic);
+    const isUnderline = Boolean(textStyle.underline);
+
+    let trimmed = content;
+    const hasTrailingNewline = trimmed.endsWith('\n');
+    if (hasTrailingNewline) trimmed = trimmed.slice(0, -1);
+
+    if (trimmed.trim()) {
+      if (linkUrl) {
+        trimmed = `[${trimmed.trim()}](${linkUrl.trim()})`;
+      }
+      if (isRed) {
+        trimmed = `<span style="color:#d4183d">${trimmed}</span>`;
+      }
+      if (isBold && !trimmed.startsWith('**')) {
+        trimmed = `**${trimmed}**`;
+      }
+      if (isItalic && !trimmed.startsWith('*')) {
+        trimmed = `*${trimmed}*`;
+      }
+      if (isUnderline && !trimmed.startsWith('<u>')) {
+        trimmed = `<u>${trimmed}</u>`;
+      }
+    }
+
+    return trimmed + (hasTrailingNewline ? '\n' : '');
+  };
+
   const extractElements = (elements: any[]): string => elements.map((element: any) => {
     if (element?.paragraph?.elements) {
-      return element.paragraph.elements
-        .map((child: any) => child.textRun?.content || '')
+      const paragraphText = element.paragraph.elements
+        .map((child: any) => extractTextRun(child.textRun))
         .join('');
+      
+      const bullet = element.paragraph.bullet;
+      if (bullet && paragraphText.trim()) {
+        return `- ${paragraphText}`;
+      }
+      return paragraphText;
     }
     if (element?.table?.tableRows) {
       return element.table.tableRows.map((row: any) =>
@@ -119,7 +195,14 @@ export function parseDiseaseDocument(text: string): Record<string, string> {
     if (currentField) result[currentField] = `${result[currentField] || ''}${result[currentField] ? '\n' : ''}${line}`;
   }
 
-  Object.keys(result).forEach(key => { result[key] = cleanText(result[key]); });
+  Object.keys(result).forEach(key => { 
+    if (key !== 'overview' && key !== 'causes' && key !== 'typesAndSymptoms' && key !== 'diagnosis' && key !== 'lifestyleAndDailySupport' && key !== 'treatmentsAndPharma' && key !== 'faqs' && key !== 'factsMyths' && key !== 'specialists' && key !== 'sources') {
+      result[key] = cleanText(result[key]);
+    } else {
+      result[key] = result[key].trim();
+    }
+  });
+
   return result;
 }
 

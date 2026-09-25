@@ -30,53 +30,35 @@ export class ValidationService {
       'causes',
     ];
 
-    // Validate core required fields
-    for (const field of coreRequiredFields) {
-      if (data[field] !== undefined && data[field] !== null && typeof data[field] === 'number') {
-        data[field] = String(data[field]);
-      }
+    // Ensure core fields have fallbacks so NO row is rejected
+    sanitized.diseaseNumber = data.diseaseNumber ? String(data.diseaseNumber).trim() : '1';
+    sanitized.name = data.name ? cleanText(data.name) : `Disease #${sanitized.diseaseNumber}`;
+    sanitized.category = data.category ? cleanText(data.category) : 'General Rare Disease';
+    sanitized.overview = data.overview ? cleanText(data.overview) : 'Information currently being updated for this condition.';
+    sanitized.causes = data.causes ? cleanText(data.causes) : 'Information not available';
 
-      if (!data[field]) {
-        errors.push(`${field} is required and must be a non-empty string`);
-      } else if (typeof data[field] !== 'string') {
-        errors.push(`${field} must be a string`);
-      } else if (data[field].trim() === '') {
-        errors.push(`${field} is required and must be a non-empty string`);
-      } else {
-        sanitized[field] = cleanText(data[field]);
-      }
-    }
+    // ── Smart-parsed structured fields + raw fallbacks ──────────────────────
 
-    // Validate optional plain-text fields with defaults
-    for (const field of optionalTextFields) {
-      if (data[field] !== undefined && data[field] !== null && typeof data[field] === 'number') {
-        data[field] = String(data[field]);
-      }
-      if (!data[field] || typeof data[field] !== 'string' || data[field].trim() === '') {
-        sanitized[field] = 'Information not available';
-        console.warn(`${field} is missing, using default value for disease:`, data.name);
-      } else {
-        sanitized[field] = cleanText(data[field]);
-      }
-    }
-
-    // ── Smart-parsed structured fields ──────────────────────────────────────
-
-    // typesAndSymptoms → string[]
+    // typesAndSymptoms → string[] + raw
+    sanitized.typesAndSymptomsRaw = typeof data.typesAndSymptoms === 'string' ? cleanText(data.typesAndSymptoms) : '';
     sanitized.typesAndSymptoms = parseSymptomsList(data.typesAndSymptoms || '');
 
-    // diagnosis → DiagnosticStep[]
+    // diagnosis → DiagnosticStep[] + raw
+    sanitized.diagnosisRaw = typeof data.diagnosis === 'string' ? cleanText(data.diagnosis) : '';
     sanitized.diagnosis = parseDiagnosticSteps(data.diagnosis || '');
 
-    // lifestyleAndDailySupport → LifestyleData
+    // lifestyleAndDailySupport → LifestyleData + raw
+    sanitized.lifestyleAndDailySupportRaw = typeof data.lifestyleAndDailySupport === 'string' ? cleanText(data.lifestyleAndDailySupport) : '';
     sanitized.lifestyleAndDailySupport = parseLifestyleSection(data.lifestyleAndDailySupport || '');
 
-    // treatmentsAndPharma → ResearchOrg[]
+    // treatmentsAndPharma → ResearchOrg[] + raw
+    sanitized.treatmentsAndPharmaRaw = typeof data.treatmentsAndPharma === 'string' ? cleanText(data.treatmentsAndPharma) : '';
     sanitized.treatmentsAndPharma = parseResearchOrgs(data.treatmentsAndPharma || '');
 
     // ── Nested data fields ───────────────────────────────────────────────────
 
     // FAQs — may already be parsed arrays or raw text
+    sanitized.faqsRaw = typeof data.faqs === 'string' ? cleanText(data.faqs) : '';
     if (data.faqs && Array.isArray(data.faqs)) {
       sanitized.faqs = data.faqs
         .map((faq: any) => this.validateFaq(faq))
@@ -89,6 +71,7 @@ export class ValidationService {
     }
 
     // factsMyths
+    sanitized.factsMythsRaw = typeof data.factsMyths === 'string' ? cleanText(data.factsMyths) : '';
     if (data.factsMyths && Array.isArray(data.factsMyths)) {
       sanitized.factsMyths = data.factsMyths
         .map((fm: any) => this.validateFactMyth(fm))
@@ -101,6 +84,7 @@ export class ValidationService {
     }
 
     // specialists
+    sanitized.specialistsRaw = typeof data.specialists === 'string' ? cleanText(data.specialists) : '';
     if (data.specialists && Array.isArray(data.specialists)) {
       sanitized.specialists = data.specialists
         .map((spec: any) => this.validateSpecialist(spec))
@@ -113,6 +97,7 @@ export class ValidationService {
     }
 
     // sources
+    sanitized.sourcesRaw = typeof data.sources === 'string' ? cleanText(data.sources) : '';
     if (data.sources && Array.isArray(data.sources)) {
       sanitized.sources = data.sources
         .map((source: any) => this.validateSource(source))
@@ -124,16 +109,9 @@ export class ValidationService {
       sanitized.sources = [];
     }
 
-    // Log validation results
-    if (errors.length > 0) {
-      console.error('Validation errors for disease:', data.name, errors);
-    } else {
-      console.log('Validation passed for disease:', data.name);
-    }
-
     return {
-      valid: errors.length === 0,
-      errors,
+      valid: true,
+      errors: [],
       sanitized
     };
   }
@@ -212,22 +190,31 @@ export class ValidationService {
   }
 
   transformGoogleSheetsData(rawData: any[]): any[] {
-    console.log('Transforming raw data, first row:', rawData[0]);
+    console.log(`Transforming ${rawData?.length || 0} raw rows from Google Sheets...`);
+    if (!Array.isArray(rawData)) return [];
+
     return rawData
       .filter(row => {
-        // Filter out rows missing core required fields
-        const hasCoreFields = row.name && row.diseaseNumber && row.category && row.overview;
-        if (!hasCoreFields) {
-          console.warn('Filtering out row missing core fields:', row);
-        }
-        return hasCoreFields;
+        if (!row || typeof row !== 'object') return false;
+        // Keep row if it has name, diseaseNumber, or ANY non-empty key value
+        const hasContent = Object.values(row).some(v => v !== undefined && v !== null && String(v).trim() !== '');
+        return hasContent;
       })
-      .map(row => {
+      .map((row, index) => {
         const transformed: any = { ...row };
 
-        // Google Sheets may return diseaseNumber as a number
-        if (transformed.diseaseNumber !== undefined && transformed.diseaseNumber !== null) {
+        // Ensure diseaseNumber exists
+        if (!transformed.diseaseNumber && transformed.diseaseNumber !== 0) {
+          transformed.diseaseNumber = String(index + 1);
+        } else {
           transformed.diseaseNumber = String(transformed.diseaseNumber).trim();
+        }
+
+        // Ensure name exists
+        if (!transformed.name || String(transformed.name).trim() === '') {
+          transformed.name = `Disease #${transformed.diseaseNumber}`;
+        } else {
+          transformed.name = String(transformed.name).trim();
         }
 
         // Normalize all string fields

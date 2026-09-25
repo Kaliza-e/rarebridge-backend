@@ -13,6 +13,7 @@ export interface ImportReport {
   failed: number;
   inserted: number;
   updated: number;
+  unchanged: number;
   error?: string;
   failures: { documentId: string; documentName: string; errors: string[] }[];
 }
@@ -66,7 +67,7 @@ export class AutomationService implements OnModuleInit {
     this.running = true;
     const startedAt = new Date().toISOString();
     const startedAtMs = Date.now();
-    const report: ImportReport = { startedAt, completedAt: '', mode, processed: 0, successful: 0, warnings: 0, failed: 0, inserted: 0, updated: 0, failures: [] };
+    const report: ImportReport = { startedAt, completedAt: '', mode, processed: 0, successful: 0, warnings: 0, failed: 0, inserted: 0, updated: 0, unchanged: 0, failures: [] };
     this.writeLog('log', 'run:start', 'Starting document import.', { mode, incremental: Boolean(this.lastSyncAt) });
     try {
       const files = await this.googleSheets.listGoogleDocs(folderId, this.lastSyncAt || undefined);
@@ -105,6 +106,7 @@ export class AutomationService implements OnModuleInit {
         const writeResult = await this.googleSheets.upsertDiseaseRows(rows);
         report.inserted = writeResult.inserted;
         report.updated = writeResult.updated;
+        report.unchanged = writeResult.unchanged || 0;
         this.writeLog('log', 'sheets:write', 'Google Sheets write completed.', writeResult);
       } else {
         this.writeLog('warn', 'sheets:write', 'No valid rows were available for Google Sheets.', { processed: report.processed, failed: report.failed });
@@ -147,6 +149,7 @@ export class AutomationService implements OnModuleInit {
       failed: report.failed,
       inserted: report.inserted,
       updated: report.updated,
+      unchanged: report.unchanged,
     };
   }
 

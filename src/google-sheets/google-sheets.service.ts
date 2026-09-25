@@ -65,7 +65,7 @@ export class GoogleSheetsService {
     range = process.env.SPREADSHEET_RANGE || process.env.GOOGLE_SPREADSHEET_RANGE || 'Disease Information!A:Z',
   ) {
     if (!spreadsheetId) throw new Error('Google Spreadsheet ID is not configured.');
-    if (!rows.length) return { inserted: 0, updated: 0 };
+    if (!rows.length) return { inserted: 0, updated: 0, unchanged: 0 };
 
     const headerResponse = await this.sheets.spreadsheets.values.get({ spreadsheetId, range });
     const values = headerResponse.data.values || [];
@@ -73,44 +73,106 @@ export class GoogleSheetsService {
 
     const headers = values[0].map((header: string) => this.mapHeaderToField(header));
     const keyColumn = headers.indexOf('diseaseNumber');
+    const nameColumn = headers.indexOf('name');
     if (keyColumn < 0) throw new Error('Sheet must contain a Disease Number column.');
+
     const sheetName = range.split('!')[0].replace(/^'|'$/g, '');
-    const existing = new Map<string, number>();
-    values.slice(1).forEach((row: any[], index: number) => {
-      const key = String(row[keyColumn] || '').trim();
-      if (key) existing.set(key, index + 2);
+    
+    // Index existing sheet rows by BOTH diseaseNumber AND normalized disease name
+    const existingByNumber = new Map<string, { rowIndex: number; rowValues: any[] }>();
+    const existingByName = new Map<string, { rowIndex: number; rowValues: any[] }>();
+
+    values.slice(1).forEach((rowValues: any[], index: number) => {
+      const rowIndex = index + 2;
+      const numKey = String(rowValues[keyColumn] || '').trim().toLowerCase();
+      const nameVal = nameColumn >= 0 ? String(rowValues[nameColumn] || '') : '';
+      const nameKey = nameVal ? this.normalizeDiseaseName(nameVal) : '';
+
+      const record = { rowIndex, rowValues };
+      if (numKey) existingByNumber.set(numKey, record);
+      if (nameKey) existingByName.set(nameKey, record);
     });
 
     const updates: any[] = [];
     const inserts: any[][] = [];
     let updated = 0;
+    let unchanged = 0;
+
     for (const row of rows) {
-      const serialized = headers.map((header: string) => this.serializeSheetValue(row[header], header));
-      const existingRow = existing.get(String(row.diseaseNumber).trim());
-      if (existingRow) {
-        updates.push({ range: `'${sheetName}'!A${existingRow}:${this.columnName(headers.length)}${existingRow}`, values: [serialized] });
-        updated++;
+      const numKey = String(row.diseaseNumber || '').trim().toLowerCase();
+      const nameKey = row.name ? this.normalizeDiseaseName(row.name) : '';
+
+      // Match by diseaseNumber OR normalized name
+      const existingMatch = (numKey ? existingByNumber.get(numKey) : undefined) || (nameKey ? existingByName.get(nameKey) : undefined);
+
+      if (existingMatch) {
+        // If match was by name but diseaseNumber existed in sheet, preserve sheet's diseaseNumber
+        if (nameColumn >= 0 && existingMatch.rowValues[keyColumn]) {
+          row.diseaseNumber = existingMatch.rowValues[keyColumn];
+        }
+
+        const serialized = headers.map((header: string) => this.serializeSheetValue(row[header], header));
+        
+        // Compare serialized values with existing row values
+        let hasChanges = false;
+        for (let i = 0; i < headers.length; i++) {
+          const existingVal = String(existingMatch.rowValues[i] || '').trim();
+          const newVal = String(serialized[i] || '').trim();
+          if (existingVal !== newVal) {
+            hasChanges = true;
+            break;
+          }
+        }
+
+        if (hasChanges) {
+          updates.push({
+            range: `'${sheetName}'!A${existingMatch.rowIndex}:${this.columnName(headers.length)}${existingMatch.rowIndex}`,
+            values: [serialized],
+          });
+          updated++;
+        } else {
+          unchanged++;
+        }
       } else {
+        const serialized = headers.map((header: string) => this.serializeSheetValue(row[header], header));
         inserts.push(serialized);
+        
+        // Add to in-memory lookup so duplicate rows in the same import batch don't double insert
+        const newRecord = { rowIndex: values.length + inserts.length, rowValues: serialized };
+        if (numKey) existingByNumber.set(numKey, newRecord);
+        if (nameKey) existingByName.set(nameKey, newRecord);
       }
     }
 
     if (updates.length) {
       await this.sheets.spreadsheets.values.batchUpdate({
         spreadsheetId,
-        requestBody: { valueInputOption: 'RAW', data: updates },
+        requestBody: { valueInputOption: 'USER_ENTERED', data: updates },
       });
     }
     if (inserts.length) {
       await this.sheets.spreadsheets.values.append({
         spreadsheetId,
         range: `'${sheetName}'!A:${this.columnName(headers.length)}`,
-        valueInputOption: 'RAW',
+        valueInputOption: 'USER_ENTERED',
         insertDataOption: 'INSERT_ROWS',
         requestBody: { values: inserts },
       });
     }
-    return { inserted: inserts.length, updated };
+    return { inserted: inserts.length, updated, unchanged };
+  }
+
+  /** Normalizes disease name for lookup */
+  private normalizeDiseaseName(name: string): string {
+    if (!name) return '';
+    return name
+      .toLowerCase()
+      .normalize('NFC')
+      .replace(/^[\s\d.#\-+]+/, '')
+      .replace(/['"’`]/g, '')
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
   private serializeSheetValue(value: any, field: string): string {
@@ -137,7 +199,6 @@ export class GoogleSheetsService {
       throw new Error('Google Spreadsheet ID is not configured.');
     }
     try {
-      // First try fetching full grid data to capture hyperlinks, rich text, and formulas
       try {
         const gridResponse = await this.sheets.spreadsheets.get({
           spreadsheetId,
@@ -317,8 +378,11 @@ export class GoogleSheetsService {
 
       // Lifestyle and daily support + community
       'lifestyle and daily support and community': 'lifestyleAndDailySupport',
+      'lifestyle and daily supoort and community': 'lifestyleAndDailySupport',
       'lifestyle and daily support community': 'lifestyleAndDailySupport',
+      'lifestyle and daily supoort community': 'lifestyleAndDailySupport',
       'lifestyle and daily support': 'lifestyleAndDailySupport',
+      'lifestyle and daily supoort': 'lifestyleAndDailySupport',
       'lifestyle and support': 'lifestyleAndDailySupport',
       'lifestyle': 'lifestyleAndDailySupport',
 

@@ -1,19 +1,18 @@
 import { Injectable } from '@nestjs/common';
 import {
   cleanText,
-  parseSymptomsList,
   parseCausesStructured,
-  parseTypesStructured,
-  parseSymptomsStructured,
   parseDiagnosticSteps,
   parseLifestyleSection,
-  parseResearchOrgs,
+  parseResearchSections,
   parseFaqs,
   parseFactsMyths,
   parseSpecialists,
   parseSources,
   parseRichTextRuns,
   parseContentNodes,
+  parseStructuredSections,
+  getSectionText,
   auditDiseaseParse,
   ParsedDisease,
   ParseCompletenessReport,
@@ -41,23 +40,76 @@ export class ValidationService {
     sanitized.causesStructured = parseCausesStructured(data.causes || '');
     sanitized.causesNodes = parseContentNodes(data.causes || '');
 
-    sanitized.typesAndSymptomsRaw = typeof data.typesAndSymptoms === 'string' ? cleanText(data.typesAndSymptoms) : '';
-    sanitized.typesAndSymptoms = parseSymptomsList(data.typesAndSymptoms || '');
-    sanitized.typesStructured = parseTypesStructured(data.typesAndSymptoms || '');
-    sanitized.symptomsStructured = parseSymptomsStructured(data.typesAndSymptoms || '');
-    sanitized.typesNodes = parseContentNodes(data.typesAndSymptoms || '');
-    sanitized.symptomsNodes = parseContentNodes(data.typesAndSymptoms || '');
+    const typesAndSymptomsRaw = typeof data.typesAndSymptoms === 'string' ? data.typesAndSymptoms.trim() : '';
+    sanitized.typesAndSymptomsRaw = typesAndSymptomsRaw;
+    sanitized.typesAndSymptomsSections = parseStructuredSections(typesAndSymptomsRaw);
+    const typeSections = sanitized.typesAndSymptomsSections.filter((section: any) =>
+      /types?|subtypes?|forms?|variants?|classes/i.test(section.title),
+    );
+    const symptomSections = sanitized.typesAndSymptomsSections.filter((section: any) =>
+      /symptom/i.test(section.title),
+    );
+    sanitized.typesAndSymptoms = symptomSections.flatMap((section: any) =>
+      section.content
+        .filter((node: any) => node.type === 'bullet' || node.type === 'numbered' || node.type === 'subsection')
+        .map((node: any) => node.title?.map((run: any) => run.text).join('') || node.content?.map((run: any) => run.text).join('') || '')
+        .filter(Boolean),
+    );
+    sanitized.typesStructured = typeSections.map((section: any) => ({
+      title: section.title,
+      description: '',
+      characteristics: section.content.map((node: any) => getSectionText({ title: '', raw: '', content: [node] })).filter(Boolean),
+    }));
+    sanitized.symptomsStructured = symptomSections.flatMap((section: any) =>
+      section.content.map((node: any) => {
+        if (!['bullet', 'numbered', 'subsection'].includes(node.type)) return null;
+        const name = node.title?.map((run: any) => run.text).join('').trim() ||
+          node.content?.map((run: any) => run.text).join('').trim() || '';
+        const description = node.children?.map((child: any) => child.content?.map((run: any) => run.text).join('') || '').filter(Boolean).join('\n') || '';
+        return name ? { name, description } : null;
+      }).filter(Boolean),
+    );
+    sanitized.typesNodes = sanitized.typesAndSymptomsSections.map((section: any) => ({
+      type: 'section',
+      title: parseRichTextRuns(section.title),
+      children: section.content,
+    }));
+    sanitized.symptomsNodes = symptomSections.map((section: any) => ({
+      type: 'section',
+      title: parseRichTextRuns(section.title),
+      children: section.content,
+    }));
 
-    sanitized.diagnosisRaw = typeof data.diagnosis === 'string' ? cleanText(data.diagnosis) : '';
+    sanitized.diagnosisRaw = typeof data.diagnosis === 'string' ? data.diagnosis.trim() : '';
     sanitized.diagnosis = parseDiagnosticSteps(data.diagnosis || '');
-    sanitized.diagnosisNodes = parseContentNodes(data.diagnosis || '');
+    sanitized.diagnosisSections = parseStructuredSections(sanitized.diagnosisRaw);
+    sanitized.diagnosisNodes = sanitized.diagnosisSections.map((section: any) => ({
+      type: 'section',
+      title: parseRichTextRuns(section.title),
+      children: section.content,
+    }));
 
-    sanitized.lifestyleAndDailySupportRaw = typeof data.lifestyleAndDailySupport === 'string' ? cleanText(data.lifestyleAndDailySupport) : '';
+    sanitized.lifestyleAndDailySupportRaw = typeof data.lifestyleAndDailySupport === 'string' ? data.lifestyleAndDailySupport.trim() : '';
     sanitized.lifestyleAndDailySupport = parseLifestyleSection(data.lifestyleAndDailySupport || '');
-    sanitized.lifestyleNodes = parseContentNodes(data.lifestyleAndDailySupport || '');
+    sanitized.lifestyleNodes = sanitized.lifestyleAndDailySupport.sections.map((section: any) => ({
+      type: 'section',
+      title: parseRichTextRuns(section.title),
+      children: section.content,
+    }));
 
-    sanitized.treatmentsAndPharmaRaw = typeof data.treatmentsAndPharma === 'string' ? cleanText(data.treatmentsAndPharma) : '';
-    sanitized.treatmentsAndPharma = parseResearchOrgs(data.treatmentsAndPharma || '');
+    sanitized.treatmentsAndPharmaRaw = typeof data.treatmentsAndPharma === 'string' ? data.treatmentsAndPharma.trim() : '';
+    sanitized.researchSections = parseResearchSections(sanitized.treatmentsAndPharmaRaw);
+    sanitized.treatmentSections = sanitized.researchSections.filter((section: any) => section.kind === 'treatment');
+    sanitized.clinicalTrials = sanitized.researchSections
+      .filter((section: any) => section.kind === 'clinicalTrials')
+      .flatMap((section: any) => section.organizations);
+    sanitized.researchOrganizations = sanitized.researchSections
+      .filter((section: any) => section.kind === 'research')
+      .flatMap((section: any) => section.organizations);
+    sanitized.treatmentsAndPharma = [
+      ...sanitized.clinicalTrials,
+      ...sanitized.researchOrganizations,
+    ];
 
     // ── Nested data fields ───────────────────────────────────────────────────
 
@@ -73,7 +125,7 @@ export class ValidationService {
       sanitized.faqs = [];
     }
 
-    sanitized.factsMythsRaw = typeof data.factsMyths === 'string' ? cleanText(data.factsMyths) : '';
+    sanitized.factsMythsRaw = typeof data.factsMyths === 'string' ? data.factsMyths.trim() : '';
     if (data.factsMyths && Array.isArray(data.factsMyths)) {
       sanitized.factsMyths = data.factsMyths
         .map((fm: any) => this.validateFactMyth(fm))
@@ -85,7 +137,7 @@ export class ValidationService {
       sanitized.factsMyths = [];
     }
 
-    sanitized.specialistsRaw = typeof data.specialists === 'string' ? cleanText(data.specialists) : '';
+    sanitized.specialistsRaw = typeof data.specialists === 'string' ? data.specialists.trim() : '';
     if (data.specialists && Array.isArray(data.specialists)) {
       sanitized.specialists = data.specialists
         .map((spec: any) => this.validateSpecialist(spec))
@@ -141,22 +193,42 @@ export class ValidationService {
 
     // Full Lossless ParsedDisease Model & Audit
     const fullParsedModel: ParsedDisease = {
+      metadata: {
+        diseaseNumber: sanitized.diseaseNumber,
+        name: sanitized.name,
+        category: sanitized.category,
+      },
       name: parseRichTextRuns(sanitized.name),
       category: parseRichTextRuns(sanitized.category),
       overview: parseRichTextRuns(sanitized.overview),
       causes: sanitized.causesNodes,
       types: sanitized.typesNodes,
       symptoms: sanitized.symptomsNodes,
+      typesAndSymptomsSections: sanitized.typesAndSymptomsSections,
       diagnosis: sanitized.diagnosisNodes,
+      diagnosisSections: sanitized.diagnosisSections,
       lifestyle: {
         dailySupport: sanitized.lifestyleNodes,
-        therapies: [],
-        nutrition: [],
-        devices: [],
-        caregiverSupport: [],
-        community: [],
+        therapies: sanitized.lifestyleAndDailySupport.sections
+          .filter((section: any) => /therap/i.test(section.title))
+          .flatMap((section: any) => section.content),
+        nutrition: sanitized.lifestyleAndDailySupport.sections
+          .filter((section: any) => /nutrition|diet|eating/i.test(section.title))
+          .flatMap((section: any) => section.content),
+        devices: sanitized.lifestyleAndDailySupport.sections
+          .filter((section: any) => /device|equipment|assistive/i.test(section.title))
+          .flatMap((section: any) => section.content),
+        caregiverSupport: sanitized.lifestyleAndDailySupport.sections
+          .filter((section: any) => /caregiver|daily care|tips|advice/i.test(section.title))
+          .flatMap((section: any) => section.content),
+        community: sanitized.lifestyleAndDailySupport.sections
+          .filter((section: any) => /community|support (?:groups?|networks?|resources?)|regional.*groups?/i.test(section.title))
+          .flatMap((section: any) => section.content),
+        sections: sanitized.lifestyleAndDailySupport.sections,
+        communities: sanitized.lifestyleAndDailySupport.communities,
       },
       research: sanitized.treatmentsAndPharma,
+      researchSections: sanitized.researchSections,
       faqs: sanitized.faqs,
       factsMyths: sanitized.factsMyths,
       specialists: sanitized.specialists,
@@ -181,20 +253,20 @@ export class ValidationService {
 
     // Parse Completeness Report
     const report: ParseCompletenessReport = {
-      sourceSectionsCount: 14,
-      parsedSectionsCount: 14,
-      displayedSectionsCount: 14,
+      sourceSectionsCount: fullParsedModel.audit.sourceSections,
+      parsedSectionsCount: fullParsedModel.audit.parsedSections,
+      displayedSectionsCount: fullParsedModel.audit.parsedSections,
       causesCount: sanitized.causesStructured.length || (sanitized.causes ? 1 : 0),
-      typesCount: sanitized.typesStructured.length || 0,
-      symptomsCount: sanitized.typesAndSymptoms.length || 0,
-      diagnosisCount: sanitized.diagnosis.length || 0,
+      typesCount: typeSections.length,
+      symptomsCount: symptomSections.length,
+      diagnosisCount: sanitized.diagnosisSections.length,
       faqsCount: sanitized.faqs.length || 0,
       mythsCount: sanitized.factsMyths.length || 0,
       specialistsCount: sanitized.specialists.length || 0,
       sourcesCount: sanitized.sources.length || 0,
       researchCount: sanitized.treatmentsAndPharma.length || 0,
       uncategorizedItemsCount: sanitized.uncategorizedContent.length || 0,
-      isComplete: true,
+      isComplete: fullParsedModel.audit.complete,
     };
     sanitized.parseCompletenessReport = report;
 
@@ -246,8 +318,8 @@ export class ValidationService {
       valid: true,
       data: {
         name: cleanText(spec.name),
-        profession: spec.profession ? cleanText(spec.profession) : 'Medical Specialist',
-        specialization: spec.specialization ? cleanText(spec.specialization) : 'Rare Diseases',
+        profession: spec.profession ? cleanText(spec.profession) : '',
+        specialization: spec.specialization ? cleanText(spec.specialization) : '',
         organization: spec.organization ? cleanText(spec.organization) : '',
         location: spec.location ? cleanText(spec.location) : '',
         contact: spec.contact ? cleanText(spec.contact) : null,
@@ -255,8 +327,10 @@ export class ValidationService {
         sources: Array.isArray(spec.sources)
           ? spec.sources.map((s: any) => cleanText(String(s)))
           : (spec.sources ? [cleanText(String(spec.sources))] : []),
-        focus: spec.focus || spec.specialization || spec.profession || 'Rare Disease Specialist',
-        why: spec.why || spec.name,
+        links: Array.isArray(spec.links) ? spec.links : [],
+        additionalContent: Array.isArray(spec.additionalContent) ? spec.additionalContent : [],
+        focus: spec.focus || spec.specialization || spec.profession || '',
+        why: spec.why || '',
       },
     };
   }

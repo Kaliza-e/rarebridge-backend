@@ -31,6 +31,13 @@ export class DiseaseService {
     for (const disease of transformedData) {
       const validation = this.validationService.validateDiseaseData(disease);
       if (validation.valid) {
+        const audit = validation.sanitized.parsedDiseaseModel?.audit;
+        if (audit?.warnings?.length || audit?.missingContent?.length) {
+          console.warn(`Disease source parsing warnings for "${disease.name || 'Unknown'}":`, {
+            missingContent: audit.missingContent,
+            warnings: audit.warnings,
+          });
+        }
         validDiseases.push({
           id: validation.sanitized.diseaseNumber, // Use diseaseNumber as ID for backward compatibility
           ...validation.sanitized

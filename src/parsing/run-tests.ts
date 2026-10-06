@@ -10,9 +10,13 @@ import {
   extractLinks,
   parseRichTextRuns,
   parseContentNodes,
+  parseStructuredSections,
+  parseLifestyleSection,
+  parseResearchSections,
   auditDiseaseParse,
   ParsedDisease,
 } from './text-parser.util';
+import { ValidationService } from '../validation/validation.service';
 
 function assert(condition: boolean, message: string) {
   if (!condition) {
@@ -20,7 +24,7 @@ function assert(condition: boolean, message: string) {
   }
 }
 
-console.log('🧪 Running Lossless Disease Parser & Pipeline Test Suite (13/13 Tests)...\n');
+console.log('🧪 Running Lossless Disease Parser & Pipeline Test Suite (18 tests)...\n');
 
 // Test 1 — Causes
 const rawCauses = `Genetic Causes
@@ -110,6 +114,7 @@ console.log('✓ Test 7 — Facts vs Myths: PASSED');
 const rawSpec = `Specialist Name: Dr. Jane Doe
 Profession: Pulmonologist
 Specialization: Pediatric CF
+Photo URL: https://example.org/photos/jane-doe.jpg
 Organization: Children Hospital
 Location: Boston, MA
 Contact: jane.doe@hospital.org
@@ -123,6 +128,7 @@ const specialists = parseSpecialists(rawSpec);
 assert(specialists.length === 2, 'Test 8: Specialists count should be 2');
 assert(specialists[0].name === 'Dr. Jane Doe', 'Test 8: Specialist 1 name matched');
 assert(specialists[0].profession === 'Pulmonologist', 'Test 8: Specialist 1 profession matched');
+assert(specialists[0].photoUrl === 'https://example.org/photos/jane-doe.jpg', 'Test 8: explicit HTTPS source photo is retained');
 assert(specialists[1].organization === 'Mayo Clinic', 'Test 8: Specialist 2 organization matched');
 console.log('✓ Test 8 — Specialists: PASSED');
 
@@ -172,15 +178,19 @@ assert(nodes.length === 1, 'Test 13: ContentNode count should be 1');
 assert(nodes[0].content?.[0].text.includes('Unrecognized random line') === true, 'Test 13: Content text preserved');
 
 const dummyParsed: ParsedDisease = {
+  metadata: { diseaseNumber: '1', name: 'CF', category: 'Genetic' },
   name: [{ text: 'CF' }],
   category: [{ text: 'Genetic' }],
   overview: [{ text: 'Overview' }],
   causes: [],
   types: [],
   symptoms: [],
+  typesAndSymptomsSections: [],
   diagnosis: [],
-  lifestyle: { dailySupport: [], therapies: [], nutrition: [], devices: [], caregiverSupport: [], community: [] },
+  diagnosisSections: [],
+  lifestyle: { dailySupport: [], therapies: [], nutrition: [], devices: [], caregiverSupport: [], community: [], sections: [], communities: [] },
   research: [],
+  researchSections: [],
   faqs: [],
   factsMyths: [],
   specialists: [],
@@ -195,4 +205,150 @@ assert(audit.warnings.length > 0, 'Test 13: Audit warning generated for unclassi
 assert(audit.complete === true, 'Test 13: Audit completed without loss');
 console.log('✓ Test 13 — Unknown Content & Audit: PASSED');
 
-console.log('\n🎉 ALL 13/13 LOSSLESS PARSER TESTS PASSED SUCCESSFULLY!');
+// Test 14 — Chordoma section hierarchy is preserved instead of being flattened as symptoms
+const chordomaTypesAndSymptoms = `Types of Chordoma (by Location)
+
+● Skull Base (Clival) Chordoma — Forms at the base of the skull, near the brainstem.
+● Spinal (Mobile Spine) Chordoma — Forms in the vertebrae of the neck, mid-back, or lower back.
+
+Types of Chordoma (by Tumor Type)
+
+● Conventional Chordoma — The most common type; grows relatively slowly.
+
+Common Symptoms
+
+Symptoms depend on location.
+
+● Persistent back, neck, or tailbone pain
+● Headaches (especially with skull base tumors)
+
+Severity
+
+Chordoma can recur even after treatment.
+
+Age of Appearance
+
+Most often diagnosed between 40 and 70 years old.`;
+const chordomaSections = parseStructuredSections(chordomaTypesAndSymptoms);
+assert(chordomaSections.length === 5, 'Test 14: Chordoma has five preserved source subsections');
+assert(chordomaSections[0].title === 'Types of Chordoma (by Location)', 'Test 14: location heading retained');
+assert(chordomaSections[1].title === 'Types of Chordoma (by Tumor Type)', 'Test 14: tumor type heading retained');
+assert(chordomaSections[2].title === 'Common Symptoms', 'Test 14: symptoms heading retained');
+assert(chordomaSections[3].raw.includes('Chordoma can recur'), 'Test 14: severity content retained');
+assert(chordomaSections[4].raw.includes('40 and 70'), 'Test 14: age of appearance retained');
+console.log('✓ Test 14 — Chordoma subsection hierarchy: PASSED');
+
+// Test 15 — A therapy category remains distinct and is not merged with the community
+const chordomaLifestyle = parseLifestyleSection(`Lifestyle & Daily Support
+
+Therapies
+
+● Physical therapy — helps rebuild strength and balance.
+● Occupational therapy — supports daily tasks.
+
+Diet/Nutrition
+
+No special diet is recommended.
+
+Community Links
+
+● Chordoma Connections (Global): Join the forum at [Chordoma Connections](https://example.org/forum).
+● European Support Network: Localized resources at https://example.org/europe.`);
+assert(chordomaLifestyle.sections.map(section => section.title).join('|') === 'Therapies|Diet/Nutrition|Community Links', 'Test 15: lifestyle subsections retained in order');
+assert(chordomaLifestyle.therapies.length === 2, 'Test 15: therapy entries remain separate');
+assert(chordomaLifestyle.communities.length === 2, 'Test 15: individual community resources remain separate');
+assert(chordomaLifestyle.communities[0].url === 'https://example.org/forum', 'Test 15: first community URL is linked to its own entry');
+assert(chordomaLifestyle.communities[1].url === 'https://example.org/europe', 'Test 15: second community URL is linked to its own entry');
+console.log('✓ Test 15 — Therapy and community grouping: PASSED');
+
+// Test 16 — Treatment and trial source headings remain separate.
+const researchSections = parseResearchSections(`Treatments:
+Surgery aims to remove the tumor.
+
+Clinical trials:
+•Pharma/Research Org Name: Example Research Center
+Focus Area: A recruiting study.
+Official Website: [Study page](https://example.org/trial)`);
+assert(researchSections.length === 2, 'Test 16: treatment and trial headings remain separate');
+assert(researchSections[0].kind === 'treatment' && researchSections[0].raw.includes('Surgery'), 'Test 16: treatment stays in treatment section');
+assert(researchSections[0].organizations.length === 0, 'Test 16: treatment is not fabricated into research organization');
+assert(researchSections[1].kind === 'clinicalTrials' && researchSections[1].organizations.length === 1, 'Test 16: trial organization is parsed separately');
+assert(researchSections[1].organizations[0].url === 'https://example.org/trial', 'Test 16: trial external URL is preserved');
+console.log('✓ Test 16 — Treatment and clinical trial separation: PASSED');
+
+// Test 17 — Plain, name-first specialist profiles are parsed without fabricated fallback records.
+const chordomaSpecialists = parseSpecialists(`Alessandro Gronchi, MD
+
+•Profession: Surgical oncologist; Chair of the Sarcoma Service.
+
+•Specialization: Sarcoma surgery and chordoma.
+
+•Organization: National Cancer Institute.
+
+•Location: Milan, Italy.
+
+•Clinical-Trial Role: Principal Investigator for the SACRO study.
+
+•Contact Information: alessandro@example.org
+
+•Recent Publications: A recent chordoma consensus.
+
+Univ.-Prof. Dr. Piero Fossati
+
+•Profession: Radiation oncologist.
+
+•Specialization: Particle therapy.`);
+assert(chordomaSpecialists.length === 2, 'Test 17: name-first specialists are split into two explicit records');
+assert(chordomaSpecialists[0].name === 'Alessandro Gronchi, MD', 'Test 17: specialist name and credentials retained');
+assert(chordomaSpecialists[0].organization === 'National Cancer Institute.', 'Test 17: explicit specialist organization retained');
+assert(chordomaSpecialists[0].additionalContent?.some(section => section.title?.[0]?.text === 'Clinical-Trial Role'), 'Test 17: non-standard specialist fields retained');
+assert(chordomaSpecialists[1].name === 'Univ.-Prof. Dr. Piero Fossati', 'Test 17: second source specialist name retained');
+console.log('✓ Test 17 — Name-first specialist records: PASSED');
+
+// Test 18 — The validation/API model keeps Chordoma's field boundaries and parsed relationships.
+const chordomaPipeline = new ValidationService().validateDiseaseData({
+  diseaseNumber: '9',
+  name: 'Chordoma',
+  category: 'Cancer',
+  overview: 'A rare cancer that forms near the skull base or spine.',
+  causes: 'Most chordomas are not inherited.',
+  typesAndSymptoms: chordomaTypesAndSymptoms,
+  diagnosis: 'MRI and CT Scans\nWhat it is: Imaging tests.\nHow it works: They show soft tissue and bone.\nThe result: They reveal tumor location.',
+  lifestyleAndDailySupport: `Lifestyle & Daily Support
+
+Therapies
+
+● Physical therapy — supports mobility.
+
+Community Links
+
+● Chordoma Connections: Join the forum at [Chordoma Connections](https://example.org/forum).`,
+  treatmentsAndPharma: `Treatments:
+Surgery is the main treatment.
+
+Clinical trials:
+•Pharma/Research Org Name: Example Research Center
+Focus Area: A recruiting study.
+Official Website: [Study page](https://example.org/trial)`,
+  faqs: '1. What is chordoma?\nChordoma is a rare cancer.',
+  factsMyths: 'Myth: Chordoma is a brain cancer.\nFact: It is a bone and soft-tissue cancer.',
+  specialists: `Alessandro Gronchi, MD
+
+•Profession: Surgical oncologist.
+
+•Specialization: Chordoma surgery.
+
+•Organization: National Cancer Institute.`,
+});
+assert(chordomaPipeline.valid, 'Test 18: Chordoma validates as a disease');
+assert(chordomaPipeline.sanitized.typesAndSymptomsSections.length === 5, 'Test 18: API model retains Chordoma section hierarchy');
+assert(chordomaPipeline.sanitized.typesStructured.length === 2, 'Test 18: only source type subsections are classified as types');
+assert(chordomaPipeline.sanitized.symptomsStructured.length === 2, 'Test 18: only common symptom entries are classified as symptoms');
+assert(chordomaPipeline.sanitized.treatmentSections[0].raw.includes('Surgery'), 'Test 18: treatment remains a separate source section');
+assert(chordomaPipeline.sanitized.clinicalTrials[0].url === 'https://example.org/trial', 'Test 18: clinical-trial URL survives validation');
+assert(chordomaPipeline.sanitized.lifestyleAndDailySupport.communities[0].url === 'https://example.org/forum', 'Test 18: disease-associated community URL survives validation');
+assert(chordomaPipeline.sanitized.specialists.length === 1 && chordomaPipeline.sanitized.specialists[0].name === 'Alessandro Gronchi, MD', 'Test 18: source specialist remains associated with Chordoma');
+assert(chordomaPipeline.sanitized.faqs.length === 1 && chordomaPipeline.sanitized.factsMyths.length === 1, 'Test 18: FAQ and fact/myth pairs stay distinct');
+console.log('✓ Test 18 — Chordoma validation/API model: PASSED');
+
+console.log('\n🎉 ALL 18/18 LOSSLESS PARSER TESTS PASSED SUCCESSFULLY!');

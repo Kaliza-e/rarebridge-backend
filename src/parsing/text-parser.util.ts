@@ -41,9 +41,23 @@ export interface ContentNode {
   metadata?: Record<string, unknown>;
 }
 
+export interface ParsedSection {
+  title: string;
+  raw: string;
+  content: ContentNode[];
+}
+
 export interface LinkItem {
   url: string;
   label?: string;
+}
+
+export interface CommunityResource {
+  name: string;
+  description: string;
+  category: string;
+  url: string | null;
+  links: LinkItem[];
 }
 
 export interface CauseItem {
@@ -85,6 +99,13 @@ export interface LifestyleData {
   caregiverTips: string[];
   community: string;
   raw: string;
+  sections: ParsedSection[];
+  communities: CommunityResource[];
+}
+
+export interface ResearchSection extends ParsedSection {
+  kind: 'treatment' | 'clinicalTrials' | 'research';
+  organizations: ResearchOrganization[];
 }
 
 export interface ResearchOrganization {
@@ -137,6 +158,7 @@ export interface ParsedSpecialist {
   name: string;
   profession: string;
   specialization: string;
+  photoUrl?: string | null;
   organization: string;
   location: string;
   contact: string | null;
@@ -186,13 +208,20 @@ export interface ParseCompletenessReport {
 }
 
 export interface ParsedDisease {
+  metadata: {
+    diseaseNumber: string;
+    name: string;
+    category: string;
+  };
   name: RichTextRun[];
   category: RichTextRun[];
   overview: RichTextRun[];
   causes: ContentNode[];
   types: ContentNode[];
   symptoms: ContentNode[];
+  typesAndSymptomsSections: ParsedSection[];
   diagnosis: ContentNode[];
+  diagnosisSections: ParsedSection[];
   lifestyle: {
     dailySupport: ContentNode[];
     therapies: ContentNode[];
@@ -200,9 +229,12 @@ export interface ParsedDisease {
     devices: ContentNode[];
     caregiverSupport: ContentNode[];
     community: ContentNode[];
+    sections: ParsedSection[];
+    communities: CommunityResource[];
     raw?: ContentNode[];
   };
   research: ResearchOrganization[];
+  researchSections: ResearchSection[];
   faqs: ParsedFAQ[];
   factsMyths: FactMythPair[];
   specialists: ParsedSpecialist[];
@@ -302,17 +334,25 @@ export function cleanText(text: string): string {
 }
 
 export function cleanLine(line: string): string {
-  return line
-    .replace(/^[\s\-\*•·▪▸►→–—>\.\d]+[\.):,\s]*/u, '')
+  return normalizeStructuredLine(line)
+    .replace(/^[\s\-*•·●▪▸►→○◦–—>\.\d]+[\.):,\s]*/u, '')
     .replace(/^["'""\u2018\u2019]/u, '')
     .trim();
 }
 
 export function splitLines(text: string): string[] {
   return text
-    .split(/\r?\n|•|▪|▸/)
-    .map(l => l.trim())
+    .split(/\r?\n|[•●▪▸►○◦]/u)
+    .map(l => normalizeStructuredLine(l))
     .filter(l => l.length > 2);
+}
+
+function splitMarkedLines(text: string): string[] {
+  return text
+    .split(/\r?\n/u)
+    .flatMap(line => line.split(/(?=[•●▪▸►○◦])/u))
+    .map(normalizeStructuredLine)
+    .filter(line => line.length > 2);
 }
 
 // ─── 3. Lossless Rich-Text Parser ─────────────────────────────────────────────
@@ -414,12 +454,165 @@ export function parseContentNodes(text: string): ContentNode[] {
   return nodes.length > 0 ? nodes : [{ type: 'paragraph', content: parseRichTextRuns(text) }];
 }
 
+function normalizeStructuredLine(value: string): string {
+  return value
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/\u000b/g, ' ')
+    .trim();
+}
+
+function headingText(value: string): string {
+  return normalizeStructuredLine(value)
+    .replace(/^#{1,6}\s*/, '')
+    .replace(/^(?:\*\*|__)(.*?)(?:\*\*|__)$/, '$1')
+    .replace(/:\s*$/, '')
+    .trim();
+}
+
+function isSectionHeading(line: string, previousBlank: boolean, firstContentLine: boolean): boolean {
+  if (!line || /^[•●▪▸►○◦*\-–—]/u.test(line)) return false;
+  if (/^#{1,6}\s+/.test(line)) return true;
+  if (line.length < 100 && /:\s*$/.test(line)) return true;
+  if (/[.!?]$/.test(line) || line.length > 85) return false;
+  if (/^(?:what it is|how it works|the result|result|question|answer)\s*:/i.test(line)) return false;
+
+  const title = headingText(line);
+  const words = title.split(/\s+/).filter(Boolean);
+  const titleCase = words.length <= 12 && words.every(word => {
+    const token = word.replace(/^[^A-Za-z0-9]+/, '');
+    return !token || /^(?:of|and|the|in|by|for|at|with|to|or|on)$/i.test(token) || /^[A-Z0-9]/.test(token);
+  });
+  return titleCase && (firstContentLine || previousBlank);
+}
+
+function subsectionNode(title: string, value: string, type: ContentNode['type'] = 'subsection'): ContentNode {
+  return {
+    type,
+    title: parseRichTextRuns(title),
+    content: undefined,
+    children: value ? [{ type: 'paragraph', content: parseRichTextRuns(value) }] : [],
+  };
+}
+
+function parseSectionContent(raw: string): ContentNode[] {
+  const nodes: ContentNode[] = [];
+  const lines = raw.split(/\r?\n/);
+  let previousBlank = true;
+  let previousBullet: ContentNode | undefined;
+
+  for (const rawLine of lines) {
+    const line = normalizeStructuredLine(rawLine);
+    if (!line) {
+      previousBlank = true;
+      continue;
+    }
+
+    const bullet = line.match(/^[•●▪▸►○◦*–—-]\s*(.+)$/u);
+    const numbered = line.match(/^\d+[.)]\s*(.+)$/u);
+    const content = (bullet?.[1] || numbered?.[1] || line).trim();
+
+    if (bullet || numbered) {
+      const keyedItem = content.match(/^([^:—–]{2,80})\s*(?::|[—–])\s*(.+)$/u);
+      if (keyedItem) {
+        const node = subsectionNode(keyedItem[1].trim(), keyedItem[2].trim());
+        nodes.push(node);
+        previousBullet = undefined;
+      } else {
+        const node: ContentNode = {
+          type: numbered ? 'numbered' : 'bullet',
+          content: parseRichTextRuns(content),
+        };
+        nodes.push(node);
+        previousBullet = node;
+      }
+      previousBlank = false;
+      continue;
+    }
+
+    const label = content.match(/^([^:]{2,80}):\s*(.*)$/u);
+    if (label && !/^(?:what it is|how it works|the result|result)$/i.test(label[1].trim())) {
+      previousBullet = subsectionNode(label[1].trim(), label[2].trim());
+      nodes.push(previousBullet);
+      previousBlank = false;
+      continue;
+    }
+
+    if (previousBullet && (previousBullet.type === 'subsection' || !previousBlank)) {
+      if (previousBullet.type === 'subsection') {
+        const children = previousBullet.children || (previousBullet.children = []);
+        const lastChild = children[children.length - 1];
+        if (lastChild?.type === 'paragraph') {
+          const existing = lastChild.content?.map(run => run.text).join('') || '';
+          lastChild.content = parseRichTextRuns(`${existing}\n${content}`.trim());
+        } else {
+          children.push({ type: 'paragraph', content: parseRichTextRuns(content) });
+        }
+        previousBlank = false;
+        continue;
+      }
+      const existing = previousBullet.content?.map(run => run.text).join('') || '';
+      previousBullet.content = parseRichTextRuns(`${existing} ${content}`.trim());
+    } else {
+      nodes.push({ type: 'paragraph', content: parseRichTextRuns(content) });
+      previousBullet = undefined;
+    }
+    previousBlank = false;
+  }
+
+  return nodes;
+}
+
+/**
+ * Splits source text on actual headings while retaining the unmodified section
+ * text and a renderable hierarchy of paragraphs, list items, and labeled items.
+ */
+export function parseStructuredSections(text: string): ParsedSection[] {
+  if (!text) return [];
+  const sections: ParsedSection[] = [];
+  let currentTitle = '';
+  let currentLines: string[] = [];
+  let previousBlank = true;
+  let firstContentLine = true;
+
+  const flush = () => {
+    if (!currentTitle && !currentLines.some(line => normalizeStructuredLine(line))) return;
+    const raw = currentLines.join('\n').trim();
+    sections.push({ title: currentTitle, raw, content: parseSectionContent(raw) });
+    currentLines = [];
+  };
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = normalizeStructuredLine(rawLine);
+    if (!line) {
+      currentLines.push('');
+      previousBlank = true;
+      continue;
+    }
+
+    if (isSectionHeading(line, previousBlank, firstContentLine)) {
+      flush();
+      const headingMatch = line.match(/^#{1,6}\s+(.+)$/);
+      const inlineValue = line.match(/^([^:]{2,80}):\s*(.+)$/u);
+      currentTitle = headingText(headingMatch?.[1] || inlineValue?.[1] || line);
+      if (inlineValue?.[2]) currentLines.push(inlineValue[2].trim());
+      firstContentLine = false;
+    } else {
+      currentLines.push(line);
+      firstContentLine = false;
+    }
+    previousBlank = false;
+  }
+  flush();
+
+  return sections;
+}
+
 // ─── 5. Causes, Types, Symptoms, Diagnosis Parsers ───────────────────────────
 
 export function parseCausesStructured(text: string): CauseItem[] {
   if (!text) return [];
   const causes: CauseItem[] = [];
-  const lines = splitLines(text);
+  const lines = splitMarkedLines(text);
 
   let currentTitle = '';
   let currentExplanationLines: string[] = [];
@@ -442,7 +635,8 @@ export function parseCausesStructured(text: string): CauseItem[] {
     const cleaned = cleanLine(rawLine);
     if (!cleaned) continue;
 
-    const isHeader = cleaned.length < 75 && !rawLine.startsWith('•') && !rawLine.startsWith('-') &&
+    const isListItem = /^[•●▪▸►○◦\-*–—]/u.test(rawLine);
+    const isHeader = cleaned.length < 75 && !isListItem &&
       (cleaned.includes('Mutation') || cleaned.includes('Gene') || cleaned.includes('Cause') || cleaned.includes('Factor') || cleaned.includes('Risk') || cleaned.length < 40);
 
     if (isHeader && (currentTitle || currentExplanationLines.length > 0)) {
@@ -450,7 +644,7 @@ export function parseCausesStructured(text: string): CauseItem[] {
       currentTitle = cleaned;
     } else if (!currentTitle && isHeader) {
       currentTitle = cleaned;
-    } else if (rawLine.startsWith('•') || rawLine.startsWith('-') || rawLine.startsWith('*')) {
+    } else if (isListItem) {
       currentDetails.push(cleaned);
     } else {
       currentExplanationLines.push(cleaned);
@@ -468,7 +662,7 @@ export function parseCausesStructured(text: string): CauseItem[] {
 export function parseTypesStructured(text: string): ParsedType[] {
   if (!text) return [];
   const types: ParsedType[] = [];
-  const lines = splitLines(text);
+  const lines = splitMarkedLines(text);
 
   let currentTitle = '';
   let currentDescLines: string[] = [];
@@ -491,15 +685,16 @@ export function parseTypesStructured(text: string): ParsedType[] {
     const cleaned = cleanLine(rawLine);
     if (!cleaned) continue;
 
+    const isListItem = /^[•●▪▸►○◦\-*–—]/u.test(rawLine);
     const isHeader = /^(?:type\s*\d+|subtype|form|variant|stage|class)\b/i.test(cleaned) ||
-      (cleaned.length < 50 && !rawLine.startsWith('•') && !rawLine.startsWith('-'));
+      (cleaned.length < 50 && !isListItem);
 
     if (isHeader && (currentTitle || currentDescLines.length > 0)) {
       flush();
       currentTitle = cleaned;
     } else if (!currentTitle && isHeader) {
       currentTitle = cleaned;
-    } else if (rawLine.startsWith('•') || rawLine.startsWith('-') || rawLine.startsWith('*')) {
+    } else if (isListItem) {
       currentChars.push(cleaned);
     } else {
       currentDescLines.push(cleaned);
@@ -595,43 +790,68 @@ export function parseDiagnosticSteps(text: string): DiagnosticStep[] {
 }
 
 export function parseLifestyleSection(text: string): LifestyleData {
-  if (!text) return { therapies: [], nutrition: '', devices: [], caregiverTips: [], community: '', raw: '' };
-  const lines = splitLines(text);
-  const therapies: string[] = [];
-  const devices: string[] = [];
-  const caregiverTips: string[] = [];
-  const nutritionLines: string[] = [];
-  const communityLines: string[] = [];
-  const otherLines: string[] = [];
+  const sections = parseStructuredSections(text).filter(section =>
+    !(/^lifestyle\s*(?:and|&)?\s*(?:daily\s+)?(?:support|care)(?:\s*(?:and|&)\s*community)?$/i.test(section.title) && !section.raw),
+  );
+  const sectionText = (section: ParsedSection) =>
+    section.content.map(node => node.content?.map(run => run.text).join('') ||
+      node.children?.map(child => child.content?.map(run => run.text).join('') || '').join(' ') || '').filter(Boolean).join('\n');
+  const isCommunitySection = (title: string) => /community|support (?:groups?|networks?|resources?)|regional.*groups?/i.test(title);
+  const communitySections = sections.filter(section => isCommunitySection(section.title));
+  const communities: CommunityResource[] = [];
 
-  let currentSection = 'other';
-
-  for (const rawLine of lines) {
-    const line = cleanLine(rawLine);
-    if (!line) continue;
-
-    if (/^(therap(?:y|ies)|treatments?)\s*:?/i.test(line)) { currentSection = 'therapy'; continue; }
-    if (/^(nutrition|diet|eating)\s*:?/i.test(line)) { currentSection = 'nutrition'; continue; }
-    if (/^(devices?|equipment|assistive)\s*:?/i.test(line)) { currentSection = 'device'; continue; }
-    if (/^(caregiver|tips?|advice)\s*:?/i.test(line)) { currentSection = 'caregiver'; continue; }
-    if (/^(community|support)\s*:?/i.test(line)) { currentSection = 'community'; continue; }
-
-    if (currentSection === 'therapy') therapies.push(line);
-    else if (currentSection === 'nutrition') nutritionLines.push(line);
-    else if (currentSection === 'device') devices.push(line);
-    else if (currentSection === 'caregiver') caregiverTips.push(line);
-    else if (currentSection === 'community') communityLines.push(line);
-    else otherLines.push(line);
+  for (const section of communitySections) {
+    for (const node of section.content) {
+      const name = node.title?.map(run => run.text).join('').trim() ||
+        node.content?.map(run => run.text).join('').trim() || '';
+      const description = node.children?.map(child => child.content?.map(run => run.text).join('') || '').filter(Boolean).join('\n').trim() || '';
+      if (!name && !description) continue;
+      const combined = [name, description].filter(Boolean).join(': ');
+      const richTextLinks = [
+        ...(node.title || []),
+        ...(node.content || []),
+        ...(node.children || []).flatMap(child => child.content || []),
+      ].filter(run => run.link).map(run => ({ url: run.link as string, label: run.text }));
+      const links = Array.from(new Map(
+        [...richTextLinks, ...extractLinks(combined)].map(link => [link.url, link]),
+      ).values());
+      communities.push({
+        name: name || description,
+        description: description ? stripLinks(description) : '',
+        category: section.title,
+        url: links[0]?.url || null,
+        links,
+      });
+    }
   }
 
+  const collectSectionItems = (pattern: RegExp) =>
+    sections.filter(section => pattern.test(section.title)).flatMap(section =>
+      section.content.map(node => node.title?.map(run => run.text).join('').trim() ||
+        node.content?.map(run => run.text).join('').trim() || '').filter(Boolean),
+    );
+  const communityText = communities.map(item => `${item.name}${item.description ? `: ${item.description}` : ''}`).join('\n');
+  const knownSections = /therapy|nutrition|diet|eating|device|equipment|assistive|caregiver|daily care|community|support|lifestyle/i;
+
   return {
-    therapies,
-    nutrition: cleanText(nutritionLines.join(' ')),
-    devices,
-    caregiverTips,
-    community: cleanText(communityLines.join(' ')),
-    raw: cleanText(otherLines.join(' ')),
+    therapies: collectSectionItems(/therap/i),
+    nutrition: collectSectionItems(/nutrition|diet|eating/i).join('\n'),
+    devices: collectSectionItems(/device|equipment|assistive/i),
+    caregiverTips: collectSectionItems(/caregiver|daily care|tips|advice/i),
+    community: communityText,
+    raw: sections.filter(section => !knownSections.test(section.title)).map(section => section.raw).filter(Boolean).join('\n\n'),
+    sections,
+    communities,
   };
+}
+
+export function getSectionText(section: ParsedSection): string {
+  return section.content.map(node => {
+    const ownText = node.content?.map(run => run.text).join('') || '';
+    const title = node.title?.map(run => run.text).join('') || '';
+    const children = node.children?.map(child => child.content?.map(run => run.text).join('') || '').filter(Boolean).join('\n') || '';
+    return [title, ownText, children].filter(Boolean).join(': ');
+  }).filter(Boolean).join('\n');
 }
 
 // ─── 6. Lossless Research & Pharma Directory Parser ───────────────────────────
@@ -639,85 +859,88 @@ export function parseLifestyleSection(text: string): LifestyleData {
 export function parseResearchOrgs(text: string): ResearchOrganization[] {
   if (!text) return [];
   const orgs: ResearchOrganization[] = [];
-  const lines = splitLines(text);
-
-  let currentName = '';
-  let currentFocusLines: string[] = [];
-  let currentUrl: string | null = null;
-  let currentDrugName = '';
-  let currentStage = '';
-  let currentStatus = '';
+  const lines = text.split(/\r?\n/);
+  let current: Partial<ResearchOrganization> | null = null;
+  let currentField: 'focus' | 'notes' | null = null;
+  const append = (field: 'focus' | 'notes', value: string) => {
+    if (!current) current = {};
+    current[field] = [current[field], value].filter(Boolean).join('\n');
+    currentField = field;
+  };
 
   const flush = () => {
-    if (currentName || currentFocusLines.length > 0) {
+    if (current?.name) {
+      const focus = String(current.focus || '').trim();
+      const url = current.url || null;
       orgs.push({
-        name: currentName || 'Research Institution',
-        focus: stripLinks(currentFocusLines.join(' ')).trim() || 'Rare disease research',
-        url: currentUrl,
-        drugName: currentDrugName || undefined,
-        stage: currentStage || undefined,
-        status: currentStatus || undefined,
-        focusAreas: [parseRichTextRuns(currentFocusLines.join(' '))],
-        whyFollow: parseRichTextRuns(currentName || 'Research Focus'),
-        links: currentUrl ? [{ url: currentUrl, label: currentName }] : [],
-      });
+        ...current,
+        name: String(current.name).trim(),
+        focus,
+        url,
+        focusAreas: focus ? [parseRichTextRuns(focus)] : [],
+        whyFollow: parseRichTextRuns(String(current.name)),
+        links: url ? [{ url, label: String(current.name) }] : [],
+      } as ResearchOrganization);
     }
-    currentName = '';
-    currentFocusLines = [];
-    currentUrl = null;
-    currentDrugName = '';
-    currentStage = '';
-    currentStatus = '';
+    current = null;
+    currentField = null;
   };
 
   for (const rawLine of lines) {
+    const line = normalizeStructuredLine(rawLine);
+    if (!line) continue;
     const links = extractLinks(rawLine);
-    const url = links.length > 0 ? links[0].url : null;
-    const cleaned = cleanLine(stripLinks(rawLine));
-    if (!cleaned && !url) continue;
-
-    const orgNameMatch = rawLine.match(/^(?:pharma\/research\s+org(?:\s+name)?|research\s+org(?:\s+name)?|org\s+name|institution)\s*:\s*(.+)$/i);
-    if (orgNameMatch) {
-      if (currentName || currentFocusLines.length > 0) flush();
-      currentName = orgNameMatch[1].trim();
+    const cleaned = cleanLine(rawLine);
+    const labeled = cleaned.match(/^(?:pharma\/research\s+org(?:\s+name)?|research\s+org(?:\s+name)?|org\s+name|institution)\s*:\s*(.+)$/i);
+    if (labeled) {
+      flush();
+      current = { name: cleanText(labeled[1]) };
+      currentField = null;
       continue;
     }
 
-    const drugMatch = rawLine.match(/^(?:drug|compound|candidate|treatment)(?:\s+name)?\s*:\s*(.+)$/i);
-    if (drugMatch) { currentDrugName = drugMatch[1].trim(); continue; }
-
-    const stageMatch = rawLine.match(/^(?:stage|phase|clinical\s+(?:stage|phase))\s*:\s*(.+)$/i);
-    if (stageMatch) { currentStage = stageMatch[1].trim(); continue; }
-
-    const statusMatch = rawLine.match(/^(?:status|trial\s+status)\s*:\s*(.+)$/i);
-    if (statusMatch) { currentStatus = statusMatch[1].trim(); continue; }
-
-    const looksLikeOrgHeader = (/\b(institute|foundation|center|hospital|university|pharma|biotech|association|society)\b/i.test(cleaned) && cleaned.length < 80) ||
-      /^[A-Z][A-Za-z\s\-,&]+(?:Institute|Foundation|Center|University|Pharma)/.test(cleaned);
-
-    if (looksLikeOrgHeader && currentFocusLines.length > 0) flush();
-
-    if (looksLikeOrgHeader && !currentName) {
-      currentName = cleaned;
-      if (url) currentUrl = url;
-    } else {
-      if (cleaned) currentFocusLines.push(cleaned);
-      if (url && !currentUrl) currentUrl = url;
+    if (!current?.name) continue;
+    const focusMatch = cleaned.match(/^(?:focus\s+area|focus|description|research\s+focus)\s*:\s*(.*)$/i);
+    if (focusMatch) { append('focus', focusMatch[1]); continue; }
+    const urlMatch = cleaned.match(/^(?:official\s+website|website|url|trial\s+link)\s*:\s*(.*)$/i);
+    if (urlMatch) {
+      current.url = links[0]?.url || extractLinks(urlMatch[1])[0]?.url || null;
+      if (!current.url && urlMatch[1]) current.notes = urlMatch[1].trim();
+      currentField = null;
+      continue;
     }
+
+    const drugMatch = cleaned.match(/^(?:drug|compound|candidate|treatment)(?:\s+name)?\s*:\s*(.+)$/i);
+    if (drugMatch) { current.drugName = drugMatch[1].trim(); currentField = null; continue; }
+    const stageMatch = cleaned.match(/^(?:stage|phase|clinical\s+(?:stage|phase))\s*:\s*(.+)$/i);
+    if (stageMatch) { current.stage = stageMatch[1].trim(); currentField = null; continue; }
+    const statusMatch = cleaned.match(/^(?:status|trial\s+status)\s*:\s*(.+)$/i);
+    if (statusMatch) { current.status = statusMatch[1].trim(); currentField = null; continue; }
+
+    const websiteLink = links[0]?.url;
+    if (websiteLink && !current.url) current.url = websiteLink;
+    if (cleaned) append(currentField || 'notes', cleaned);
   }
   flush();
 
-  if (orgs.length === 0 && text.trim()) {
-    const links = extractLinks(text);
-    orgs.push({
-      name: 'Research & Pharma Directory',
-      focus: cleanText(text),
-      url: links.length > 0 ? links[0].url : null,
-      links,
-    });
-  }
-
   return orgs;
+}
+
+export function parseResearchSections(text: string): ResearchSection[] {
+  const sections = parseStructuredSections(text);
+  return sections.map(section => {
+    const title = section.title;
+    const kind: ResearchSection['kind'] = /^treatments?(?:\b|$)|management/i.test(title)
+      ? 'treatment'
+      : /clinical\s*trials?/i.test(title)
+        ? 'clinicalTrials'
+        : 'research';
+    return {
+      ...section,
+      kind,
+      organizations: kind === 'treatment' ? [] : parseResearchOrgs(section.raw),
+    };
+  });
 }
 
 // ─── 7. Lossless FAQ Parser ───────────────────────────────────────────────────
@@ -789,50 +1012,47 @@ export function parseFaqs(text: string): ParsedFAQ[] {
 export function parseFactsMyths(text: string): FactMythPair[] {
   if (!text) return [];
   const items: FactMythPair[] = [];
-  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  let myth = '';
+  let fact = '';
+  let current: 'myth' | 'fact' | null = null;
 
-  let i = 0;
-  while (i < lines.length) {
-    const line = cleanLine(lines[i]);
-    const isMythHeader = /^myth[\s:]/i.test(line) || /^(?:myth\s*\d*|common myth)/i.test(line);
-    const isFactHeader = /^fact[\s:]/i.test(line) || /^(?:fact\s*\d*|reality|truth)/i.test(line);
-
-    if (isMythHeader) {
-      const mythText = line.replace(/^(?:myth\s*\d*|common myth)[:\s]*/i, '').trim() ||
-        (i + 1 < lines.length && !/^(?:fact|myth)/i.test(lines[i+1]) ? cleanLine(lines[++i]) : '');
-      
-      let factText = '';
-      if (i + 1 < lines.length && /^fact[\s:]/i.test(cleanLine(lines[i + 1]))) {
-        i++;
-        factText = cleanLine(lines[i]).replace(/^(?:fact\s*\d*|reality|truth)[:\s]*/i, '').trim();
-      } else if (i + 1 < lines.length && !/^(?:myth)/i.test(cleanLine(lines[i + 1]))) {
-        i++;
-        factText = cleanLine(lines[i]).replace(/^(?:fact\s*\d*|reality|truth)[:\s]*/i, '').trim();
-      }
-
-      if (mythText || factText) {
-        items.push({
-          myth: parseRichTextRuns(mythText || 'Common Misconception'),
-          fact: parseRichTextRuns(factText || 'Verified Medical Fact'),
-          explanation: parseRichTextRuns(factText || mythText),
-          statement: mythText || 'Common Misconception',
-          isFact: false,
-          order: items.length + 1,
-        });
-      }
-    } else if (isFactHeader) {
-      const factText = line.replace(/^(?:fact\s*\d*|reality|truth)[:\s]*/i, '').trim();
+  const flush = () => {
+    if (myth || fact) {
       items.push({
-        myth: parseRichTextRuns('Common Misconception'),
-        fact: parseRichTextRuns(factText),
-        explanation: parseRichTextRuns(factText),
-        statement: factText,
-        isFact: true,
+        myth: parseRichTextRuns(myth),
+        fact: parseRichTextRuns(fact),
+        explanation: parseRichTextRuns(fact),
+        statement: myth || fact,
+        isFact: !myth && Boolean(fact),
         order: items.length + 1,
       });
     }
-    i++;
+    myth = '';
+    fact = '';
+    current = null;
+  };
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = normalizeStructuredLine(rawLine);
+    if (!line) continue;
+    const clean = cleanLine(line);
+    const mythMatch = clean.match(/^(?:common\s+)?myth(?:\s*#?\d+)?\s*:\s*(.*)$/i);
+    const factMatch = clean.match(/^(?:fact|reality|truth)(?:\s*#?\d+)?\s*:\s*(.*)$/i);
+
+    if (mythMatch) {
+      if (myth || fact) flush();
+      myth = mythMatch[1].trim();
+      current = 'myth';
+    } else if (factMatch) {
+      fact = [fact, factMatch[1].trim()].filter(Boolean).join('\n');
+      current = 'fact';
+    } else if (current === 'myth') {
+      myth = [myth, clean].filter(Boolean).join('\n');
+    } else if (current === 'fact') {
+      fact = [fact, clean].filter(Boolean).join('\n');
+    }
   }
+  flush();
 
   return items;
 }
@@ -842,63 +1062,156 @@ export function parseFactsMyths(text: string): FactMythPair[] {
 export function parseSpecialists(text: string): ParsedSpecialist[] {
   if (!text || typeof text !== 'string') return [];
   const blockSeparatorRegex = /(?:^|[\r\n]+)\s*(?:#{1,6}\s+)?(?:(?:\d+[\.\)]|[•▪▸►*–—\-])\s*)?(?:Specialist\s+Name|Specialist(?!\s+(?:Directory|Section|Information))|Doctor|Physician|Name)\s*[:\-–—]/gi;
-
-  const positions: number[] = [];
-  let match: RegExpExecArray | null;
-  while ((match = blockSeparatorRegex.exec(text)) !== null) positions.push(match.index);
-
   const list: ParsedSpecialist[] = [];
-  if (positions.length > 0) {
-    for (let i = 0; i < positions.length; i++) {
-      const start = positions[i];
-      const end = i + 1 < positions.length ? positions[i + 1] : text.length;
-      const block = text.slice(start, end);
+  let current: Partial<ParsedSpecialist> & { extra?: Record<string, string> } | null = null;
+  let currentField: string | null = null;
+  let previousBlank = true;
 
-      const nameMatch = block.match(/(?:Specialist\s+Name|Doctor|Physician|Name)\s*[:\-–—]\s*([^\n\r]+)/i);
-      if (!nameMatch) continue;
-      const name = cleanLine(nameMatch[1]);
-      const profMatch = block.match(/(?:Profession|Position|Role|Title)\s*[:\-–—]\s*([^\n\r]+)/i);
-      const specMatch = block.match(/(?:Specialization|Speciality|Specialty|Expertise)\s*[:\-–—]\s*([^\n\r]+)/i);
-      const orgMatch = block.match(/(?:Organization|Organisation|Hospital|Institution)\s*[:\-–—]\s*([^\n\r]+)/i);
-      const locMatch = block.match(/(?:Location|Address|City)\s*[:\-–—]\s*([^\n\r]+)/i);
-      const contactMatch = block.match(/(?:Contact\s+Information|Contact|Phone|Email|Website)\s*[:\-–—]\s*([^\n\r]+)/i);
-      const pubMatch = block.match(/(?:Recent\s+Publications|Publications|Research)\s*[:\-–—]\s*([^\n\r]+)/i);
-
-      const links = extractLinks(block);
-      const sources = links.map(l => l.url);
-
+  const start = (name: string) => {
+    current = { name: cleanLine(name), extra: {} };
+    currentField = null;
+  };
+  const flush = () => {
+    if (current?.name) {
+      const fullText = Object.values(current).filter(value => typeof value === 'string').join('\n');
+      const links = extractLinks(fullText);
+      const specialization = String(current.specialization || '');
       list.push({
-        name,
-        profession: profMatch ? cleanLine(profMatch[1]) : 'Medical Specialist',
-        specialization: specMatch ? cleanLine(specMatch[1]) : 'Rare Diseases',
-        organization: orgMatch ? cleanLine(orgMatch[1]) : 'Medical Center',
-        location: locMatch ? cleanLine(locMatch[1]) : 'Location',
-        contact: contactMatch ? cleanLine(contactMatch[1]) : (links.length > 0 ? links[0].url : null),
-        publications: pubMatch ? cleanLine(pubMatch[1]) : 'Publications available',
-        sources,
-        focus: specMatch ? cleanLine(specMatch[1]) : 'Rare Disease Specialist',
-        why: name,
+        name: String(current.name),
+        profession: String(current.profession || ''),
+        specialization,
+        photoUrl: extractLinks(String(current.photoUrl || ''))
+          .map(link => link.url)
+          .find(url => /^https:\/\//i.test(url)) || String(current.photoUrl || '').trim() || null,
+        organization: String(current.organization || ''),
+        location: String(current.location || ''),
+        contact: current.contact ? String(current.contact) : null,
+        publications: String(current.publications || ''),
+        sources: Array.from(new Set([...(current.sources || []), ...links.map(link => link.url)])),
+        focus: specialization || String(current.profession || ''),
+        why: String(current.why || ''),
         links,
+        additionalContent: Object.entries(current.extra || {}).map(([label, value]) => ({
+          type: 'subsection' as const,
+          title: parseRichTextRuns(label),
+          children: [{ type: 'paragraph' as const, content: parseRichTextRuns(value) }],
+        })),
       });
     }
-  }
+    current = null;
+    currentField = null;
+  };
 
-  if (list.length === 0 && text.trim()) {
-    const links = extractLinks(text);
-    list.push({
-      name: 'Medical Specialist',
-      profession: 'Physician',
-      specialization: 'Rare Disease Care',
-      organization: 'Clinical Center',
-      location: 'Regional Hospital',
-      contact: links.length > 0 ? links[0].url : null,
-      publications: cleanText(text),
-      sources: links.map(l => l.url),
-      focus: 'Rare Disease Care',
-      why: 'Specialist Directory',
-      links,
-    });
+  const fieldMatchers: Array<[string, RegExp]> = [
+    ['name', /^(?:specialist\s+name|doctor|physician|name)\s*[:\-–—]\s*(.*)$/i],
+    ['profession', /^(?:profession|position|role|title)\s*[:\-–—]\s*(.*)$/i],
+    ['specialization', /^(?:specialization|speciality|specialty|expertise)\s*[:\-–—]\s*(.*)$/i],
+    ['photoUrl', /^(?:(?:verified|official)\s+)?(?:profile\s+)?(?:photo|image)(?:\s+url)?\s*[:\-–—]\s*(.*)$/i],
+    ['organization', /^(?:organization|organisation|hospital|institution)\s*[:\-–—]\s*(.*)$/i],
+    ['location', /^(?:location|address|city)\s*[:\-–—]\s*(.*)$/i],
+    ['contact', /^(?:contact\s+information|contact|phone|email|website)\s*[:\-–—]\s*(.*)$/i],
+    ['publications', /^(?:recent\s+publications|publications|research)\s*[:\-–—]\s*(.*)$/i],
+    ['sources', /^sources?\s*[:\-–—]\s*(.*)$/i],
+  ];
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = normalizeStructuredLine(rawLine);
+    if (!line) {
+      previousBlank = true;
+      continue;
+    }
+    const clean = cleanLine(line);
+    const labeledName = clean.match(blockSeparatorRegex);
+    if (labeledName) {
+      const name = clean.replace(/^(?:specialist\s+name|specialist|doctor|physician|name)\s*[:\-–—]\s*/i, '');
+      if (name) {
+        flush();
+        start(name);
+      }
+      previousBlank = false;
+      continue;
+    }
+
+    let matchedField: [string, RegExpExecArray] | undefined;
+    for (const [field, matcher] of fieldMatchers) {
+      const match = matcher.exec(clean);
+      if (match) {
+        matchedField = [field, match];
+        break;
+      }
+    }
+
+    if (matchedField?.[0] === 'name') {
+      flush();
+      start(matchedField[1][1]);
+      previousBlank = false;
+      continue;
+    }
+    if (matchedField) {
+      if (!current?.name) {
+        previousBlank = false;
+        continue;
+      }
+      const [field, match] = matchedField;
+      const value = match[1].trim();
+      if (field === 'sources') {
+        const links = extractLinks(value);
+        current.sources = [...(current.sources || []), ...links.map(link => link.url)];
+      } else {
+        (current as Record<string, unknown>)[field] = value;
+      }
+      currentField = field;
+      previousBlank = false;
+      continue;
+    }
+
+    const extraField = clean.match(/^([^:]{2,80})\s*:\s*(.*)$/u);
+    if (extraField) {
+      if (current?.name) {
+        current.extra = current.extra || {};
+        const label = extraField[1].trim();
+        current.extra[label] = extraField[2].trim();
+        currentField = label;
+      }
+      previousBlank = false;
+      continue;
+    }
+
+    if (!current?.name) {
+      if (/^(?:(?:univ\.-)?prof(?:essor)?\.?\s+|dr\.?\s+)/i.test(clean) ||
+          /,\s*(?:MD|DO|PhD|MBBS|MBBCh|FRCS)\b/i.test(clean)) {
+        start(clean);
+      }
+      previousBlank = false;
+      continue;
+    }
+
+    const isLikelyNextName = previousBlank && currentField === 'publications' &&
+      clean.length < 100 && !/:/.test(clean) &&
+      (/^(?:(?:univ\.-)?prof(?:essor)?\.?\s+|dr\.?\s+)/i.test(clean) || /,\s*(?:MD|DO|PhD|MBBS|MBBCh|FRCS)\b/i.test(clean));
+    if (isLikelyNextName) {
+      flush();
+      start(clean);
+      previousBlank = false;
+      continue;
+    }
+
+    if (currentField === 'sources') {
+      current.sources = [...(current.sources || []), ...extractLinks(clean).map(link => link.url)];
+    } else if (currentField && currentField in current) {
+      const existing = String((current as Record<string, unknown>)[currentField] || '');
+      (current as Record<string, unknown>)[currentField] = [existing, clean].filter(Boolean).join('\n');
+    } else if (currentField && current.extra) {
+      current.extra[currentField] = [current.extra[currentField], clean].filter(Boolean).join('\n');
+    } else {
+      const extraLabel = `Additional information ${Object.keys(current.extra || {}).length + 1}`;
+      current.extra = current.extra || {};
+      current.extra[extraLabel] = [current.extra[extraLabel], clean].filter(Boolean).join('\n');
+      currentField = extraLabel;
+    }
+    previousBlank = false;
   }
+  flush();
 
   return list;
 }
@@ -953,7 +1266,33 @@ export function auditDiseaseParse(source: Record<string, string>, parsed: Parsed
     parsed.specialists.flatMap(sp => sp.sources || []).length;
 
   const warnings: string[] = [];
-  const missingContent: string[] = [];
+  const sourceSectionNames = [
+    'overview',
+    'causes',
+    'typesAndSymptoms',
+    'diagnosis',
+    'lifestyleAndDailySupport',
+    'treatmentsAndPharma',
+    'faqs',
+    'factsMyths',
+    'specialists',
+    'sources',
+  ];
+  const sourceSections = sourceSectionNames.filter(name => Boolean(source[name]?.trim()));
+  const parsedFieldContent: Record<string, boolean> = {
+    overview: parsed.overview.length > 0,
+    causes: parsed.causes.length > 0,
+    typesAndSymptoms: parsed.typesAndSymptomsSections.length > 0,
+    diagnosis: parsed.diagnosisSections.length > 0,
+    lifestyleAndDailySupport: parsed.lifestyle.sections.length > 0,
+    treatmentsAndPharma: parsed.researchSections.length > 0,
+    faqs: parsed.faqs.length > 0,
+    factsMyths: parsed.factsMyths.length > 0,
+    specialists: parsed.specialists.length > 0,
+    sources: parsed.sources.length > 0,
+  };
+  const parsedSections = sourceSections.filter(name => parsedFieldContent[name]).length;
+  const missingContent = sourceSections.filter(name => !parsedFieldContent[name]);
 
   if (sourceUrls > parsedUrls) {
     warnings.push(`Source contained ${sourceUrls} URLs but parsed model extracted ${parsedUrls} URLs.`);
@@ -968,8 +1307,8 @@ export function auditDiseaseParse(source: Record<string, string>, parsed: Parsed
     parsedCharacters: parsedChars,
     sourceUrls,
     parsedUrls,
-    sourceSections: Object.keys(source).length,
-    parsedSections: 14,
+    sourceSections: sourceSections.length,
+    parsedSections,
     missingContent,
     warnings,
     complete: missingContent.length === 0,

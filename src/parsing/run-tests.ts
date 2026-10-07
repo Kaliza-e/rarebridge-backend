@@ -24,7 +24,7 @@ function assert(condition: boolean, message: string) {
   }
 }
 
-console.log('🧪 Running Lossless Disease Parser & Pipeline Test Suite (18 tests)...\n');
+console.log('🧪 Running Lossless Disease Parser & Pipeline Test Suite (19 tests)...\n');
 
 // Test 1 — Causes
 const rawCauses = `Genetic Causes
@@ -351,4 +351,21 @@ assert(chordomaPipeline.sanitized.specialists.length === 1 && chordomaPipeline.s
 assert(chordomaPipeline.sanitized.faqs.length === 1 && chordomaPipeline.sanitized.factsMyths.length === 1, 'Test 18: FAQ and fact/myth pairs stay distinct');
 console.log('✓ Test 18 — Chordoma validation/API model: PASSED');
 
-console.log('\n🎉 ALL 18/18 LOSSLESS PARSER TESTS PASSED SUCCESSFULLY!');
+// Test 19 — Numbered Markdown sections pasted into Overview are routed to their matching tabs.
+const combinedOverviewPipeline = new ValidationService().validateDiseaseData({
+  diseaseNumber: '10',
+  name: 'Example Genetic Condition',
+  category: 'Genetic',
+  overview: 'Genetic **1. Overview** This inherited condition has **important features**. **2. Causes** **Genetic Causes:** Changes in a gene. **3. Types & Symptoms** **Early-onset form:** Symptoms begin early. **Common Symptoms:** Fatigue and weakness. **4. Diagnosis** Blood testing confirms the condition. **5. Treatment & Management** Treatment supports symptoms. **6. Living with the condition** Families may need support.',
+});
+assert(combinedOverviewPipeline.valid, 'Test 19: combined overview validates as a disease');
+assert(combinedOverviewPipeline.sanitized.overview.includes('This inherited condition'), 'Test 19: overview section is isolated');
+assert(!combinedOverviewPipeline.sanitized.overview.includes('2. Causes'), 'Test 19: later numbered headings are removed from overview');
+assert(combinedOverviewPipeline.sanitized.causesStructured.some((cause: any) => cause.explanation.includes('Changes in a gene')), 'Test 19: causes are extracted to the causes tab');
+assert(combinedOverviewPipeline.sanitized.typesAndSymptomsSections.length > 0, `Test 19: types and symptoms are extracted to their tab (${combinedOverviewPipeline.sanitized.typesAndSymptomsRaw})`);
+assert(combinedOverviewPipeline.sanitized.diagnosisSections.length > 0, 'Test 19: diagnosis is extracted to its tab');
+assert(combinedOverviewPipeline.sanitized.treatmentSections.length > 0, 'Test 19: treatment is extracted to its tab');
+assert(combinedOverviewPipeline.sanitized.lifestyleAndDailySupport.sections.length > 0, 'Test 19: lifestyle is extracted to its tab');
+console.log('✓ Test 19 — Combined numbered overview routing: PASSED');
+
+console.log('\n🎉 ALL 19/19 LOSSLESS PARSER TESTS PASSED SUCCESSFULLY!');

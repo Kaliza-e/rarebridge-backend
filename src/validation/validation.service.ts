@@ -18,11 +18,108 @@ import {
   ParseCompletenessReport,
 } from '../parsing/text-parser.util';
 
+const OVERVIEW_SECTION_FIELDS: Array<[RegExp, string]> = [
+  [/^(?:overview|description|summary|what\s+is\s+.+)$/i, 'overview'],
+  [/^(?:causes?(?:\s+and\s+risk\s+factors?)?|risk\s+factors?)$/i, 'causes'],
+  [/^(?:types?(?:\s+and\s+symptoms?)?|symptoms?|clinical\s+presentation)$/i, 'typesAndSymptoms'],
+  [/^(?:diagnosis|diagnostic\s+methods?)$/i, 'diagnosis'],
+  [/^(?:treatments?(?:\s+and\s+management)?|management)$/i, 'treatmentsAndPharma'],
+  [/^(?:research(?:\s+and\s+(?:clinical\s+)?trials?)?|clinical\s+trials?)$/i, 'treatmentsAndPharma'],
+  [/^(?:lifestyle(?:\s+and\s+daily\s+support)?|daily\s+support|living\s+with\b.*|community(?:\s+and\s+support)?|support\s+and\s+resources?)$/i, 'lifestyleAndDailySupport'],
+  [/^(?:faqs?|frequently\s+asked\s+questions)$/i, 'faqs'],
+  [/^(?:facts?\s+(?:vs\.?|and)\s+myths?|myths?\s+and\s+facts?)$/i, 'factsMyths'],
+  [/^(?:specialists?|specialist\s+directory)$/i, 'specialists'],
+  [/^(?:sources?|references?)$/i, 'sources'],
+];
+
+function normalizeOverviewSectionBody(value: string): string {
+  return value
+    .replace(/\s+\*\*([^*]{1,80}:)\*\*\s*/g, '\n$1\n')
+    .replace(/\s+(?=[•●▪▸►]\s*)/g, '\n')
+    .trim();
+}
+
+function splitNumberedOverview(data: any): any {
+  if (!data || typeof data.overview !== 'string') return data;
+
+  const source = data.overview;
+  const headingPattern = /(?:^|\s)(?:\*\*|__)\s*(\d{1,2})[.)]\s*([^*_]{2,80}?)\s*(?:\*\*|__)(?=\s|$)/g;
+  const headings: Array<{ start: number; end: number; field?: string; title: string }> = [];
+  let match: RegExpExecArray | null;
+
+  while ((match = headingPattern.exec(source)) !== null) {
+    const title = match[2].trim().replace(/[:.]+$/, '').trim();
+    const normalizedTitle = title.replace(/&/g, 'and').replace(/\s+/g, ' ').trim();
+    const field = OVERVIEW_SECTION_FIELDS.find(([pattern]) => pattern.test(normalizedTitle))?.[1];
+    headings.push({
+      start: match.index,
+      end: headingPattern.lastIndex,
+      field,
+      title,
+    });
+  }
+
+  if (!headings.length) return data;
+
+  const extracted = new Map<string, string[]>();
+  const unrecognized: string[] = [];
+  const firstHeading = headings[0];
+  let overviewIntro = source.slice(0, firstHeading.start).trim();
+  if (overviewIntro.toLowerCase() === String(data.category || '').trim().toLowerCase()) {
+    overviewIntro = '';
+  }
+
+  for (let index = 0; index < headings.length; index++) {
+    const heading = headings[index];
+    const nextHeading = headings[index + 1];
+    const body = normalizeOverviewSectionBody(
+      source.slice(heading.end, nextHeading?.start ?? source.length),
+    );
+    if (!body) continue;
+    if (!heading.field) {
+      unrecognized.push(`${heading.title}\n${body}`);
+    } else {
+      const sectionContent = heading.field === 'treatmentsAndPharma'
+        ? `${heading.title}:\n${body}`
+        : body;
+      extracted.set(heading.field, [...(extracted.get(heading.field) || []), sectionContent]);
+    }
+  }
+
+  const result = { ...data };
+  result.overview = '';
+  if (overviewIntro) {
+    extracted.set('overview', [overviewIntro, ...(extracted.get('overview') || [])]);
+  }
+
+  for (const [field, chunks] of extracted) {
+    const existing = result[field];
+    const hasExistingContent = Array.isArray(existing)
+      ? existing.length > 0
+      : existing !== undefined && existing !== null && String(existing).trim().length > 0;
+    if (!hasExistingContent) result[field] = chunks.join('\n\n');
+  }
+
+  if (unrecognized.length) {
+    const existingUncategorized = Array.isArray(result.uncategorized)
+      ? result.uncategorized
+      : result.uncategorized
+        ? [result.uncategorized]
+        : [];
+    result.uncategorized = [
+      ...existingUncategorized,
+      ...unrecognized,
+    ];
+  }
+  return result;
+}
+
 @Injectable()
 export class ValidationService {
   validateDiseaseData(data: any): { valid: boolean; errors: string[]; sanitized: any } {
     const errors: string[] = [];
     const sanitized: any = {};
+    data = splitNumberedOverview(data);
 
     const rawName = data?.name ? cleanText(data.name) : '';
     if (!rawName || /^disease\s*#?\s*\d+$/i.test(rawName)) {

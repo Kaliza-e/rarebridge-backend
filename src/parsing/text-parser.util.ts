@@ -636,8 +636,13 @@ export function parseCausesStructured(text: string): CauseItem[] {
     if (!cleaned) continue;
 
     const isListItem = /^[•●▪▸►○◦\-*–—]/u.test(rawLine);
+    const headerWords = cleaned.split(/\s+/).filter(Boolean);
+    const isTitleLine = headerWords.every(word => {
+      const token = word.replace(/^[^A-Za-z0-9]+/, '');
+      return !token || /^(?:of|and|the|in|by|for|at|with|to|or|on)$/i.test(token) || /^[A-Z0-9]/.test(token);
+    });
     const isHeader = cleaned.length < 75 && !isListItem &&
-      (cleaned.includes('Mutation') || cleaned.includes('Gene') || cleaned.includes('Cause') || cleaned.includes('Factor') || cleaned.includes('Risk') || cleaned.length < 40);
+      (cleaned.endsWith(':') || (isTitleLine && headerWords.length <= 8 && !/[.!?]$/.test(cleaned)));
 
     if (isHeader && (currentTitle || currentExplanationLines.length > 0)) {
       flush();

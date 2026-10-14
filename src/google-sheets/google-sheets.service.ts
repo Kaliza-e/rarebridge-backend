@@ -29,34 +29,104 @@ export class GoogleSheetsService {
     this.docs = google.docs({ version: 'v1', auth });
   }
 
-  async listGoogleDocs(folderId: string, modifiedAfter?: string) {
-    const clauses = [
-      `'${folderId}' in parents`,
-      "mimeType = 'application/vnd.google-apps.document'",
-      'trashed = false',
-    ];
-    if (modifiedAfter) clauses.push(`modifiedTime > '${modifiedAfter}'`);
+  async listGoogleDocs(folderInput: string | string[], modifiedAfter?: string) {
+    const folderIds = (Array.isArray(folderInput) ? folderInput : folderInput.split(','))
+      .map(id => id.trim())
+      .filter(Boolean);
 
     const files: any[] = [];
-    let pageToken: string | undefined;
-    do {
-      const response = await this.drive.files.list({
-        q: clauses.join(' and '),
-        fields: 'nextPageToken,files(id,name,modifiedTime,webViewLink,md5Checksum)',
-        orderBy: 'modifiedTime asc',
-        pageSize: 1000,
-        pageToken,
-        includeItemsFromAllDrives: true,
-        supportsAllDrives: true,
-      });
-      files.push(...(response.data.files || []));
-      pageToken = response.data.nextPageToken || undefined;
-    } while (pageToken);
+    const visitedFolders = new Set<string>();
+
+    const traverseFolder = async (fId: string) => {
+      if (visitedFolders.has(fId)) return;
+      visitedFolders.add(fId);
+
+      const clauses = [
+        `'${fId}' in parents`,
+        'trashed = false',
+      ];
+      if (modifiedAfter) clauses.push(`modifiedTime > '${modifiedAfter}'`);
+
+      let pageToken: string | undefined;
+      do {
+        const response = await this.drive.files.list({
+          q: clauses.join(' and '),
+          fields: 'nextPageToken,files(id,name,mimeType,modifiedTime,webViewLink,md5Checksum)',
+          orderBy: 'modifiedTime asc',
+          pageSize: 1000,
+          pageToken,
+          includeItemsFromAllDrives: true,
+          supportsAllDrives: true,
+        });
+        const items = response.data.files || [];
+        for (const item of items) {
+          if (item.mimeType === 'application/vnd.google-apps.folder') {
+            await traverseFolder(item.id);
+          } else if (
+            item.mimeType === 'application/vnd.google-apps.document' ||
+            item.mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+            item.name?.toLowerCase().endsWith('.docx')
+          ) {
+            files.push(item);
+          }
+        }
+        pageToken = response.data.nextPageToken || undefined;
+      } while (pageToken);
+    };
+
+    for (const id of folderIds) {
+      await traverseFolder(id);
+    }
+
     return files;
   }
 
   async getGoogleDoc(documentId: string) {
     return this.docs.documents.get({ documentId });
+  }
+
+  async getDriveFileBuffer(fileId: string): Promise<Buffer> {
+    const response = await this.drive.files.get(
+      { fileId, alt: 'media', supportsAllDrives: true },
+      { responseType: 'arraybuffer' },
+    );
+    return Buffer.from(response.data);
+  }
+
+  async appendValidationLogs(
+    entries: any[][],
+    spreadsheetId = process.env.SPREADSHEET_ID || process.env.GOOGLE_SPREADSHEET_ID || '',
+  ) {
+    if (!spreadsheetId || !entries.length) return;
+    try {
+      await this.sheets.spreadsheets.values.append({
+        spreadsheetId,
+        range: "'Validation Log'!A:G",
+        valueInputOption: 'USER_ENTERED',
+        insertDataOption: 'INSERT_ROWS',
+        requestBody: { values: entries },
+      });
+    } catch (err: any) {
+      console.warn('Could not append to Validation Log:', err.message);
+    }
+  }
+
+  async appendSyncLog(
+    entry: any[],
+    spreadsheetId = process.env.SPREADSHEET_ID || process.env.GOOGLE_SPREADSHEET_ID || '',
+  ) {
+    if (!spreadsheetId || !entry.length) return;
+    try {
+      await this.sheets.spreadsheets.values.append({
+        spreadsheetId,
+        range: "'Sync Log'!A:H",
+        valueInputOption: 'USER_ENTERED',
+        insertDataOption: 'INSERT_ROWS',
+        requestBody: { values: [entry] },
+      });
+    } catch (err: any) {
+      console.warn('Could not append to Sync Log:', err.message);
+    }
   }
 
   async upsertDiseaseRows(
@@ -102,8 +172,19 @@ export class GoogleSheetsService {
       const numKey = String(row.diseaseNumber || '').trim().toLowerCase();
       const nameKey = row.name ? this.normalizeDiseaseName(row.name) : '';
 
-      // Match by diseaseNumber OR normalized name
-      const existingMatch = (numKey ? existingByNumber.get(numKey) : undefined) || (nameKey ? existingByName.get(nameKey) : undefined);
+      // Match by normalized name FIRST, with prefix fallback
+      let existingMatch = nameKey ? existingByName.get(nameKey) : undefined;
+      if (!existingMatch && nameKey) {
+        for (const [k, rec] of existingByName.entries()) {
+          if (nameKey.startsWith(k) || k.startsWith(nameKey)) {
+            existingMatch = rec;
+            break;
+          }
+        }
+      }
+      if (!existingMatch && numKey && numKey !== '1') {
+        existingMatch = existingByNumber.get(numKey);
+      }
 
       if (existingMatch) {
         // If match was by name but diseaseNumber existed in sheet, preserve sheet's diseaseNumber
@@ -170,6 +251,7 @@ export class GoogleSheetsService {
       .normalize('NFC')
       .replace(/^[\s\d.#\-+]+/, '')
       .replace(/['"’`]/g, '')
+      .replace(/\(.*?\)/g, '')
       .replace(/[^a-z0-9\s]/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();
@@ -331,6 +413,7 @@ export class GoogleSheetsService {
       .replace(/\+/g, ' and ')
       .replace(/[\/]/g, ' ')
       .replace(/[.,()]/g, '')
+      .replace(/_/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();
 
@@ -433,6 +516,21 @@ export class GoogleSheetsService {
       'source directory': 'sources',
       'references': 'sources',
       'reference': 'sources',
+
+      // Metadata appended at far right
+      'doc url': 'docUrl',
+      'doc_url': 'docUrl',
+      'doc id': 'docId',
+      'doc_id': 'docId',
+      'last synced': 'lastSynced',
+      'last_synced': 'lastSynced',
+      'format version': 'formatVersion',
+      'format_version': 'formatVersion',
+      'validation status': 'validationStatus',
+      'validation_status': 'validationStatus',
+      'source hash': 'sourceHash',
+      'source_hash': 'sourceHash',
+      'approved': 'approved',
     };
 
     if (headerMap[cleaned]) return headerMap[cleaned];

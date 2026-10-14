@@ -65,9 +65,15 @@ export class DiseaseService {
       );
     }
 
-    if (category) {
-      const catLower = category.toLowerCase();
-      diseases = diseases.filter(d => d.category && d.category.toLowerCase() === catLower);
+    if (category && category !== 'All' && category !== 'all') {
+      const catLower = category.toLowerCase().trim();
+      diseases = diseases.filter(d => {
+        if (!d.category) return false;
+        const cats = String(d.category)
+          .split(',')
+          .map(c => c.trim().toLowerCase());
+        return cats.includes(catLower) || String(d.category).toLowerCase().includes(catLower);
+      });
     }
 
     // Sort by name
@@ -76,7 +82,13 @@ export class DiseaseService {
 
   async findOne(id: string) {
     const diseases = await this.fetchAndCacheDiseases();
-    const disease = diseases.find(d => d.id === id || d.diseaseNumber === id);
+    const idLower = String(id).trim().toLowerCase();
+    const disease = diseases.find(d =>
+      String(d.id).toLowerCase() === idLower ||
+      String(d.diseaseNumber).toLowerCase() === idLower ||
+      String(d.name).toLowerCase() === idLower ||
+      String(d.name).toLowerCase().replace(/\s+/g, '-') === idLower
+    );
     if (!disease) {
       throw new NotFoundException(`Disease with ID/Number ${id} not found`);
     }
@@ -85,7 +97,8 @@ export class DiseaseService {
 
   async findByDiseaseNumber(diseaseNumber: string) {
     const diseases = await this.fetchAndCacheDiseases();
-    const disease = diseases.find(d => d.diseaseNumber === diseaseNumber);
+    const numLower = String(diseaseNumber).trim().toLowerCase();
+    const disease = diseases.find(d => String(d.diseaseNumber).trim().toLowerCase() === numLower);
     if (!disease) {
       throw new NotFoundException(`Disease with number ${diseaseNumber} not found`);
     }
@@ -93,8 +106,18 @@ export class DiseaseService {
   }
 
   async getCategories() {
-    const diseases = await this.fetchAndCacheDiseases();
-    const categories = new Set<string>(diseases.map(d => d.category).filter(Boolean));
-    return Array.from(categories).sort();
+    return [
+      'Neurological',
+      'Genetic',
+      'Cancer',
+      'Vascular',
+      'Autoimmune',
+      'Metabolic',
+      'Endocrine',
+      'Multi-System',
+      'Pulmonary',
+      'Musculoskeletal',
+      'Hepatobiliary',
+    ];
   }
 }

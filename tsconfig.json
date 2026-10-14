@@ -15,6 +15,7 @@
     "paths": {
       "*": ["*"]
     },
+    "types": ["node"],
     "skipLibCheck": true,
     "strictNullChecks": false,
     "noImplicitAny": false,

@@ -11,14 +11,15 @@ async function bootstrap() {
     .filter(Boolean);
 
   app.enableCors({
-    origin: corsOrigins,
+    origin: corsOrigins.length ? corsOrigins : true,
+    credentials: true,
   });
   app.useGlobalPipes(new ValidationPipe({
     whitelist: true,
     transform: true,
   }));
 
-  const port = process.env.PORT;
+  const port = Number(process.env.PORT || 3000);
   await app.listen(port);
   console.log(`🚀 RareBridge API is running on http://localhost:${port}`);
 }

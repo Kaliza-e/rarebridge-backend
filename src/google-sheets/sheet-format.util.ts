@@ -90,6 +90,7 @@ function formatSources(value: any): string {
 
 export function formatSheetValue(value: any, field: string): string {
   if (value === undefined || value === null) return '';
+  if (typeof value === 'string' && value.trimStart().startsWith('<!--rbm:')) return value;
   if (field === 'typesAndSymptoms') return Array.isArray(value) ? lines(value) : text(value);
   if (field === 'diagnosis') return formatDiagnosis(value);
   if (field === 'lifestyleAndDailySupport') return formatLifestyle(value);

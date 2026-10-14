@@ -17,6 +17,17 @@ import {
   ParsedDisease,
   ParseCompletenessReport,
 } from '../parsing/text-parser.util';
+import {
+  isRbmCell,
+  parseRbm,
+  blocksToPlainText,
+  spansToPlainText,
+  extractSpecialistsFromBlocks,
+  extractFaqsFromBlocks,
+  extractFactsMythsFromBlocks,
+  extractSourcesFromBlocks,
+  extractResearchFromBlocks,
+} from '../rbm';
 
 const OVERVIEW_SECTION_FIELDS: Array<[RegExp, string]> = [
   [/^(?:overview|description|summary|what\s+is\s+.+)$/i, 'overview'],
@@ -40,7 +51,7 @@ function normalizeOverviewSectionBody(value: string): string {
 }
 
 function splitNumberedOverview(data: any): any {
-  if (!data || typeof data.overview !== 'string') return data;
+  if (!data || typeof data.overview !== 'string' || isRbmCell(data.overview)) return data;
 
   const source = data.overview;
   const headingPattern = /(?:^|\s)(?:\*\*|__)\s*(\d{1,2})[.)]\s*([^*_]{2,80}?)\s*(?:\*\*|__)(?=\s|$)/g;
@@ -129,89 +140,216 @@ export class ValidationService {
     sanitized.diseaseNumber = data.diseaseNumber ? String(data.diseaseNumber).trim() : '1';
     sanitized.name = rawName;
     sanitized.category = data.category ? cleanText(data.category) : 'General Rare Disease';
-    sanitized.overview = data.overview ? cleanText(data.overview) : 'Information currently being updated for this condition.';
-    sanitized.causes = data.causes ? cleanText(data.causes) : 'Information not available';
 
-    // ── Smart-parsed structured fields & ContentNode trees ──────────────────────
+    // RBM container
+    sanitized.rbmBlocks = {};
+    let hasRbm = false;
 
-    sanitized.causesStructured = parseCausesStructured(data.causes || '');
-    sanitized.causesNodes = parseContentNodes(data.causes || '');
+    // 1. Overview
+    if (isRbmCell(data.overview)) {
+      hasRbm = true;
+      const blocks = parseRbm(data.overview);
+      sanitized.rbmBlocks.overview = blocks;
+      sanitized.overview = blocksToPlainText(blocks);
+    } else {
+      sanitized.overview = data.overview ? cleanText(data.overview) : 'Information currently being updated for this condition.';
+    }
 
+    // 2. Causes
+    if (isRbmCell(data.causes)) {
+      hasRbm = true;
+      const blocks = parseRbm(data.causes);
+      sanitized.rbmBlocks.causes = blocks;
+      sanitized.causes = blocksToPlainText(blocks);
+      sanitized.causesStructured = blocks
+        .filter(b => b.type === 'labeled')
+        .map((b: any) => ({
+          title: b.label,
+          explanation: spansToPlainText(b.body),
+        }));
+      sanitized.causesNodes = parseContentNodes(sanitized.causes);
+    } else {
+      sanitized.causes = data.causes ? cleanText(data.causes) : 'Information not available';
+      sanitized.causesStructured = parseCausesStructured(data.causes || '');
+      sanitized.causesNodes = parseContentNodes(data.causes || '');
+    }
+
+    // 3. Types and Symptoms
     const typesAndSymptomsRaw = typeof data.typesAndSymptoms === 'string' ? data.typesAndSymptoms.trim() : '';
-    sanitized.typesAndSymptomsRaw = typesAndSymptomsRaw;
-    sanitized.typesAndSymptomsSections = parseStructuredSections(typesAndSymptomsRaw);
-    const typeSections = sanitized.typesAndSymptomsSections.filter((section: any) =>
-      /types?|subtypes?|forms?|variants?|classes/i.test(section.title),
-    );
-    const symptomSections = sanitized.typesAndSymptomsSections.filter((section: any) =>
-      /symptom/i.test(section.title),
-    );
-    sanitized.typesAndSymptoms = symptomSections.flatMap((section: any) =>
-      section.content
-        .filter((node: any) => node.type === 'bullet' || node.type === 'numbered' || node.type === 'subsection')
-        .map((node: any) => node.title?.map((run: any) => run.text).join('') || node.content?.map((run: any) => run.text).join('') || '')
-        .filter(Boolean),
-    );
-    sanitized.typesStructured = typeSections.map((section: any) => ({
-      title: section.title,
-      description: '',
-      characteristics: section.content.map((node: any) => getSectionText({ title: '', raw: '', content: [node] })).filter(Boolean),
-    }));
-    sanitized.symptomsStructured = symptomSections.flatMap((section: any) =>
-      section.content.map((node: any) => {
-        if (!['bullet', 'numbered', 'subsection'].includes(node.type)) return null;
-        const name = node.title?.map((run: any) => run.text).join('').trim() ||
-          node.content?.map((run: any) => run.text).join('').trim() || '';
-        const description = node.children?.map((child: any) => child.content?.map((run: any) => run.text).join('') || '').filter(Boolean).join('\n') || '';
-        return name ? { name, description } : null;
-      }).filter(Boolean),
-    );
-    sanitized.typesNodes = sanitized.typesAndSymptomsSections.map((section: any) => ({
-      type: 'section',
-      title: parseRichTextRuns(section.title),
-      children: section.content,
-    }));
-    sanitized.symptomsNodes = symptomSections.map((section: any) => ({
-      type: 'section',
-      title: parseRichTextRuns(section.title),
-      children: section.content,
-    }));
+    let typeSections: any[] = [];
+    let symptomSections: any[] = [];
+    if (isRbmCell(typesAndSymptomsRaw)) {
+      hasRbm = true;
+      const blocks = parseRbm(typesAndSymptomsRaw);
+      sanitized.rbmBlocks.typesSymptoms = blocks;
+      sanitized.typesAndSymptomsRaw = blocksToPlainText(blocks);
+      sanitized.typesAndSymptomsSections = parseStructuredSections(sanitized.typesAndSymptomsRaw);
+      sanitized.typesStructured = [];
+      sanitized.symptomsStructured = [];
+      for (const b of blocks) {
+        if (b.type === 'labeled') {
+          sanitized.typesStructured.push({
+            title: b.label,
+            description: spansToPlainText(b.body),
+          });
+        } else if (b.type === 'list') {
+          for (const item of b.items) {
+            sanitized.symptomsStructured.push({
+              name: spansToPlainText(item.spans),
+            });
+          }
+        }
+      }
+      sanitized.typesAndSymptoms = sanitized.symptomsStructured.map((s: any) => s.name);
+      sanitized.typesNodes = sanitized.typesAndSymptomsSections.map((section: any) => ({
+        type: 'section',
+        title: parseRichTextRuns(section.title),
+        children: section.content,
+      }));
+      sanitized.symptomsNodes = [];
+    } else {
+      sanitized.typesAndSymptomsRaw = typesAndSymptomsRaw;
+      sanitized.typesAndSymptomsSections = parseStructuredSections(typesAndSymptomsRaw);
+      typeSections = sanitized.typesAndSymptomsSections.filter((section: any) =>
+        /types?|subtypes?|forms?|variants?|classes/i.test(section.title),
+      );
+      symptomSections = sanitized.typesAndSymptomsSections.filter((section: any) =>
+        /symptom/i.test(section.title),
+      );
+      sanitized.typesAndSymptoms = symptomSections.flatMap((section: any) =>
+        section.content
+          .filter((node: any) => node.type === 'bullet' || node.type === 'numbered' || node.type === 'subsection')
+          .map((node: any) => node.title?.map((run: any) => run.text).join('') || node.content?.map((run: any) => run.text).join('') || '')
+          .filter(Boolean),
+      );
+      sanitized.typesStructured = typeSections.map((section: any) => ({
+        title: section.title,
+        description: '',
+        characteristics: section.content.map((node: any) => getSectionText({ title: '', raw: '', content: [node] })).filter(Boolean),
+      }));
+      sanitized.symptomsStructured = symptomSections.flatMap((section: any) =>
+        section.content.map((node: any) => {
+          if (!['bullet', 'numbered', 'subsection'].includes(node.type)) return null;
+          const name = node.title?.map((run: any) => run.text).join('').trim() ||
+            node.content?.map((run: any) => run.text).join('').trim() || '';
+          const description = node.children?.map((child: any) => child.content?.map((run: any) => run.text).join('') || '').filter(Boolean).join('\n') || '';
+          return name ? { name, description } : null;
+        }).filter(Boolean),
+      );
+      sanitized.typesNodes = sanitized.typesAndSymptomsSections.map((section: any) => ({
+        type: 'section',
+        title: parseRichTextRuns(section.title),
+        children: section.content,
+      }));
+      sanitized.symptomsNodes = symptomSections.map((section: any) => ({
+        type: 'section',
+        title: parseRichTextRuns(section.title),
+        children: section.content,
+      }));
+    }
 
-    sanitized.diagnosisRaw = typeof data.diagnosis === 'string' ? data.diagnosis.trim() : '';
-    sanitized.diagnosis = parseDiagnosticSteps(data.diagnosis || '');
-    sanitized.diagnosisSections = parseStructuredSections(sanitized.diagnosisRaw);
-    sanitized.diagnosisNodes = sanitized.diagnosisSections.map((section: any) => ({
-      type: 'section',
-      title: parseRichTextRuns(section.title),
-      children: section.content,
-    }));
+    // 4. Diagnosis
+    const diagnosisRaw = typeof data.diagnosis === 'string' ? data.diagnosis.trim() : '';
+    if (isRbmCell(diagnosisRaw)) {
+      hasRbm = true;
+      const blocks = parseRbm(diagnosisRaw);
+      sanitized.rbmBlocks.diagnosis = blocks;
+      sanitized.diagnosisRaw = blocksToPlainText(blocks);
+      sanitized.diagnosis = blocks
+        .filter(b => b.type === 'group')
+        .map((g: any, idx: number) => {
+          const whatB = g.blocks?.find((b: any) => b.type === 'labeled' && /what/i.test(b.label));
+          const howB = g.blocks?.find((b: any) => b.type === 'labeled' && /how/i.test(b.label));
+          const resB = g.blocks?.find((b: any) => b.type === 'labeled' && /result/i.test(b.label));
+          return {
+            name: g.title || `Diagnostic Method ${idx + 1}`,
+            what: whatB ? spansToPlainText(whatB.body) : '',
+            how: howB ? spansToPlainText(howB.body) : '',
+            result: resB ? spansToPlainText(resB.body) : '',
+          };
+        });
+      sanitized.diagnosisSections = parseStructuredSections(sanitized.diagnosisRaw);
+      sanitized.diagnosisNodes = sanitized.diagnosisSections.map((section: any) => ({
+        type: 'section',
+        title: parseRichTextRuns(section.title),
+        children: section.content,
+      }));
+    } else {
+      sanitized.diagnosisRaw = diagnosisRaw;
+      sanitized.diagnosis = parseDiagnosticSteps(data.diagnosis || '');
+      sanitized.diagnosisSections = parseStructuredSections(sanitized.diagnosisRaw);
+      sanitized.diagnosisNodes = sanitized.diagnosisSections.map((section: any) => ({
+        type: 'section',
+        title: parseRichTextRuns(section.title),
+        children: section.content,
+      }));
+    }
 
-    sanitized.lifestyleAndDailySupportRaw = typeof data.lifestyleAndDailySupport === 'string' ? data.lifestyleAndDailySupport.trim() : '';
-    sanitized.lifestyleAndDailySupport = parseLifestyleSection(data.lifestyleAndDailySupport || '');
-    sanitized.lifestyleNodes = sanitized.lifestyleAndDailySupport.sections.map((section: any) => ({
-      type: 'section',
-      title: parseRichTextRuns(section.title),
-      children: section.content,
-    }));
+    // 5. Lifestyle & Daily Support
+    const lifestyleRaw = typeof data.lifestyleAndDailySupport === 'string' ? data.lifestyleAndDailySupport.trim() : '';
+    if (isRbmCell(lifestyleRaw)) {
+      hasRbm = true;
+      const blocks = parseRbm(lifestyleRaw);
+      sanitized.rbmBlocks.lifestyle = blocks;
+      sanitized.lifestyleAndDailySupportRaw = blocksToPlainText(blocks);
+      sanitized.lifestyleAndDailySupport = parseLifestyleSection(sanitized.lifestyleAndDailySupportRaw);
+      sanitized.lifestyleNodes = sanitized.lifestyleAndDailySupport.sections.map((section: any) => ({
+        type: 'section',
+        title: parseRichTextRuns(section.title),
+        children: section.content,
+      }));
+    } else {
+      sanitized.lifestyleAndDailySupportRaw = lifestyleRaw;
+      sanitized.lifestyleAndDailySupport = parseLifestyleSection(data.lifestyleAndDailySupport || '');
+      sanitized.lifestyleNodes = sanitized.lifestyleAndDailySupport.sections.map((section: any) => ({
+        type: 'section',
+        title: parseRichTextRuns(section.title),
+        children: section.content,
+      }));
+    }
 
-    sanitized.treatmentsAndPharmaRaw = typeof data.treatmentsAndPharma === 'string' ? data.treatmentsAndPharma.trim() : '';
-    sanitized.researchSections = parseResearchSections(sanitized.treatmentsAndPharmaRaw);
-    sanitized.treatmentSections = sanitized.researchSections.filter((section: any) => section.kind === 'treatment');
-    sanitized.clinicalTrials = sanitized.researchSections
-      .filter((section: any) => section.kind === 'clinicalTrials')
-      .flatMap((section: any) => section.organizations);
-    sanitized.researchOrganizations = sanitized.researchSections
-      .filter((section: any) => section.kind === 'research')
-      .flatMap((section: any) => section.organizations);
-    sanitized.treatmentsAndPharma = [
-      ...sanitized.clinicalTrials,
-      ...sanitized.researchOrganizations,
-    ];
+    // 6. Treatments & Research Directory
+    const treatmentsRaw = typeof data.treatmentsAndPharma === 'string' ? data.treatmentsAndPharma.trim() : '';
+    if (isRbmCell(treatmentsRaw)) {
+      hasRbm = true;
+      const blocks = parseRbm(treatmentsRaw);
+      sanitized.rbmBlocks.research = blocks;
+      sanitized.treatmentsAndPharmaRaw = blocksToPlainText(blocks);
+      const ext = extractResearchFromBlocks(blocks);
+      sanitized.researchSections = parseResearchSections(sanitized.treatmentsAndPharmaRaw);
+      sanitized.treatmentSections = ext.treatmentSections;
+      sanitized.clinicalTrials = ext.clinicalTrials;
+      sanitized.researchOrganizations = ext.researchOrganizations;
+      sanitized.treatmentsAndPharma = [
+        ...sanitized.clinicalTrials,
+        ...sanitized.researchOrganizations,
+      ];
+    } else {
+      sanitized.treatmentsAndPharmaRaw = treatmentsRaw;
+      sanitized.researchSections = parseResearchSections(sanitized.treatmentsAndPharmaRaw);
+      sanitized.treatmentSections = sanitized.researchSections.filter((section: any) => section.kind === 'treatment');
+      sanitized.clinicalTrials = sanitized.researchSections
+        .filter((section: any) => section.kind === 'clinicalTrials')
+        .flatMap((section: any) => section.organizations);
+      sanitized.researchOrganizations = sanitized.researchSections
+        .filter((section: any) => section.kind === 'research')
+        .flatMap((section: any) => section.organizations);
+      sanitized.treatmentsAndPharma = [
+        ...sanitized.clinicalTrials,
+        ...sanitized.researchOrganizations,
+      ];
+    }
 
     // ── Nested data fields ───────────────────────────────────────────────────
 
     sanitized.faqsRaw = typeof data.faqs === 'string' ? cleanText(data.faqs) : '';
-    if (data.faqs && Array.isArray(data.faqs)) {
+    if (isRbmCell(data.faqs)) {
+      hasRbm = true;
+      const blocks = parseRbm(data.faqs);
+      sanitized.rbmBlocks.faqs = blocks;
+      sanitized.faqsRaw = blocksToPlainText(blocks);
+      sanitized.faqs = extractFaqsFromBlocks(blocks);
+    } else if (data.faqs && Array.isArray(data.faqs)) {
       sanitized.faqs = data.faqs
         .map((faq: any) => this.validateFaq(faq))
         .filter((f: any) => f.valid)
@@ -223,7 +361,13 @@ export class ValidationService {
     }
 
     sanitized.factsMythsRaw = typeof data.factsMyths === 'string' ? data.factsMyths.trim() : '';
-    if (data.factsMyths && Array.isArray(data.factsMyths)) {
+    if (isRbmCell(data.factsMyths)) {
+      hasRbm = true;
+      const blocks = parseRbm(data.factsMyths);
+      sanitized.rbmBlocks.myths = blocks;
+      sanitized.factsMythsRaw = blocksToPlainText(blocks);
+      sanitized.factsMyths = extractFactsMythsFromBlocks(blocks);
+    } else if (data.factsMyths && Array.isArray(data.factsMyths)) {
       sanitized.factsMyths = data.factsMyths
         .map((fm: any) => this.validateFactMyth(fm))
         .filter((f: any) => f.valid)
@@ -235,7 +379,13 @@ export class ValidationService {
     }
 
     sanitized.specialistsRaw = typeof data.specialists === 'string' ? data.specialists.trim() : '';
-    if (data.specialists && Array.isArray(data.specialists)) {
+    if (isRbmCell(data.specialists)) {
+      hasRbm = true;
+      const blocks = parseRbm(data.specialists);
+      sanitized.rbmBlocks.specialists = blocks;
+      sanitized.specialistsRaw = blocksToPlainText(blocks);
+      sanitized.specialists = extractSpecialistsFromBlocks(blocks);
+    } else if (data.specialists && Array.isArray(data.specialists)) {
       sanitized.specialists = data.specialists
         .map((spec: any) => this.validateSpecialist(spec))
         .filter((s: any) => s.valid)
@@ -247,7 +397,13 @@ export class ValidationService {
     }
 
     sanitized.sourcesRaw = typeof data.sources === 'string' ? cleanText(data.sources) : '';
-    if (data.sources && Array.isArray(data.sources)) {
+    if (isRbmCell(data.sources)) {
+      hasRbm = true;
+      const blocks = parseRbm(data.sources);
+      sanitized.rbmBlocks.sources = blocks;
+      sanitized.sourcesRaw = blocksToPlainText(blocks);
+      sanitized.sources = extractSourcesFromBlocks(blocks);
+    } else if (data.sources && Array.isArray(data.sources)) {
       sanitized.sources = data.sources
         .map((source: any) => this.validateSource(source))
         .filter((s: any) => s.valid)
@@ -256,6 +412,18 @@ export class ValidationService {
       sanitized.sources = parseSources(data.sources);
     } else {
       sanitized.sources = [];
+    }
+
+    // Metadata
+    sanitized.docUrl = data.docUrl || data.doc_url || '';
+    sanitized.docId = data.docId || data.doc_id || '';
+    sanitized.lastSynced = data.lastSynced || data.last_synced || '';
+    sanitized.formatVersion = data.formatVersion || data.format_version || (hasRbm ? 'rbm:1' : 'legacy');
+    sanitized.validationStatus = data.validationStatus || data.validation_status || 'VALID';
+    sanitized.sourceHash = data.sourceHash || data.source_hash || '';
+    sanitized.approved = data.approved !== undefined ? data.approved : true;
+    if (!hasRbm) {
+      delete sanitized.rbmBlocks;
     }
 
     // REQUIREMENT 14: Specialist sources MUST also be in global disease sources list (deduplicated)

@@ -57,12 +57,22 @@ export class DiseaseService {
     let diseases = await this.fetchAndCacheDiseases();
 
     if (search) {
-      const searchLower = search.toLowerCase();
-      diseases = diseases.filter(d => 
-        (d.name && d.name.toLowerCase().includes(searchLower)) ||
-        (d.category && d.category.toLowerCase().includes(searchLower)) ||
-        (d.overview && d.overview.toLowerCase().includes(searchLower))
-      );
+      const searchLower = search.toLowerCase().trim();
+      diseases = diseases.filter(d => {
+        const nameStr = typeof d.name === 'string' ? d.name.toLowerCase() : '';
+        const catStr = typeof d.category === 'string' ? d.category.toLowerCase() : '';
+        const ovStr = typeof d.overview === 'string'
+          ? d.overview.toLowerCase()
+          : (d.overview?.simple || d.overview?.medical || '').toLowerCase();
+        const numStr = typeof d.diseaseNumber === 'string' ? d.diseaseNumber.toLowerCase() : String(d.diseaseNumber || '').toLowerCase();
+
+        return (
+          nameStr.includes(searchLower) ||
+          catStr.includes(searchLower) ||
+          ovStr.includes(searchLower) ||
+          numStr.includes(searchLower)
+        );
+      });
     }
 
     if (category && category !== 'All' && category !== 'all') {

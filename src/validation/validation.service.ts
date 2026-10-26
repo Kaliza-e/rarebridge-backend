@@ -151,6 +151,10 @@ export class ValidationService {
       const blocks = parseRbm(data.overview);
       sanitized.rbmBlocks.overview = blocks;
       sanitized.overview = blocksToPlainText(blocks);
+    } else if (typeof data.overview === 'object' && data.overview !== null) {
+      sanitized.overview = data.overview.simple
+        ? cleanText(data.overview.simple) + (data.overview.medical ? `\n\nClinical Detail: ${cleanText(data.overview.medical)}` : '')
+        : (data.overview.medical ? cleanText(data.overview.medical) : JSON.stringify(data.overview));
     } else {
       sanitized.overview = data.overview ? cleanText(data.overview) : 'Information currently being updated for this condition.';
     }
@@ -168,9 +172,34 @@ export class ValidationService {
           explanation: spansToPlainText(b.body),
         }));
       sanitized.causesNodes = parseContentNodes(sanitized.causes);
+    } else if (typeof data.causes === 'object' && data.causes !== null) {
+      if (Array.isArray(data.causesStructured) && data.causesStructured.length > 0) {
+        sanitized.causesStructured = data.causesStructured;
+        sanitized.causes = data.causesStructured.map((c: any) => `${c.title}: ${c.explanation}`).join('\n\n');
+      } else {
+        const parts: string[] = [];
+        const structured: any[] = [];
+        if (data.causes.genetic) {
+          parts.push(`Genetic Causes: ${cleanText(data.causes.genetic)}`);
+          structured.push({ title: 'Genetic Causes', explanation: cleanText(data.causes.genetic) });
+        }
+        if (data.causes.environmental) {
+          parts.push(`Environmental Factors: ${cleanText(data.causes.environmental)}`);
+          structured.push({ title: 'Environmental Factors', explanation: cleanText(data.causes.environmental) });
+        }
+        if (data.causes.unknown) {
+          parts.push(`Other / Idiopathic Factors: ${cleanText(data.causes.unknown)}`);
+          structured.push({ title: 'Other / Idiopathic Factors', explanation: cleanText(data.causes.unknown) });
+        }
+        sanitized.causes = parts.join('\n\n') || 'Information not available';
+        sanitized.causesStructured = structured.length ? structured : parseCausesStructured(sanitized.causes);
+      }
+      sanitized.causesNodes = parseContentNodes(sanitized.causes);
     } else {
       sanitized.causes = data.causes ? cleanText(data.causes) : 'Information not available';
-      sanitized.causesStructured = parseCausesStructured(data.causes || '');
+      sanitized.causesStructured = Array.isArray(data.causesStructured) && data.causesStructured.length > 0
+        ? data.causesStructured
+        : parseCausesStructured(data.causes || '');
       sanitized.causesNodes = parseContentNodes(data.causes || '');
     }
 
@@ -645,7 +674,9 @@ export class ValidationService {
 
         for (const field of stringFields) {
           if (transformed[field] !== undefined && transformed[field] !== null) {
-            transformed[field] = String(transformed[field]).trim();
+            if (typeof transformed[field] === 'string') {
+              transformed[field] = transformed[field].trim();
+            }
           }
         }
 

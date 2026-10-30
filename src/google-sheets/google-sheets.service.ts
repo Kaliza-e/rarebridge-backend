@@ -172,16 +172,8 @@ export class GoogleSheetsService {
       const numKey = String(row.diseaseNumber || '').trim().toLowerCase();
       const nameKey = row.name ? this.normalizeDiseaseName(row.name) : '';
 
-      // Match by normalized name FIRST, with prefix fallback
+      // Match by exact normalized name FIRST
       let existingMatch = nameKey ? existingByName.get(nameKey) : undefined;
-      if (!existingMatch && nameKey) {
-        for (const [k, rec] of existingByName.entries()) {
-          if (nameKey.startsWith(k) || k.startsWith(nameKey)) {
-            existingMatch = rec;
-            break;
-          }
-        }
-      }
       if (!existingMatch && numKey && numKey !== '1') {
         existingMatch = existingByNumber.get(numKey);
       }

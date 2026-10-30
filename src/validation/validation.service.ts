@@ -137,7 +137,9 @@ export class ValidationService {
       return { valid: false, errors: ['Missing real disease name in source row'], sanitized: null };
     }
 
-    sanitized.diseaseNumber = data.diseaseNumber ? String(data.diseaseNumber).trim() : '1';
+    sanitized.diseaseNumber = data.diseaseNumber
+      ? String(data.diseaseNumber).trim()
+      : (data.id && String(data.id).trim() !== '' ? String(data.id).trim() : '');
     sanitized.name = rawName;
     sanitized.category = data.category ? cleanText(data.category) : 'General Rare Disease';
 

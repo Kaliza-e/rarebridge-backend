@@ -225,42 +225,40 @@ export function extractDocLines(document: any, issues: Issue[]): RawLine[] {
         paraSpans.every(s => !s.t.trim() || s.b);
 
       // Split paragraph by newline if it contains multiple lines
-      const splitLines = fullParaText.split('\n');
-      if (splitLines.length > 1) {
-        let spanOffset = 0;
-        for (let lIdx = 0; lIdx < splitLines.length; lIdx++) {
-          const lineText = splitLines[lIdx].trim();
-          if (lineText) {
-            // Filter spans corresponding to this line
-            const lineSpans: Span[] = [];
-            let remainingLine = lineText;
-            while (spanOffset < paraSpans.length && remainingLine) {
-              const sp = paraSpans[spanOffset];
-              const spTrim = sp.t.replace(/\n/g, '').trim();
-              if (spTrim) {
-                lineSpans.push({ ...sp, t: spTrim });
-                remainingLine = remainingLine.replace(spTrim, '').trim();
-              }
-              spanOffset++;
-            }
-
-            lines.push({
-              text: lineText,
-              spans: autoLinkSpans(lineSpans.length ? lineSpans : [{ t: lineText }], issues),
-              namedStyle,
-              isBold,
-              isBullet,
-              bulletLevel,
-              isHeading,
-            });
+      const splitLineSpans: Span[][] = [[]];
+      for (const sp of paraSpans) {
+        const parts = sp.t.split('\n');
+        for (let pIdx = 0; pIdx < parts.length; pIdx++) {
+          if (pIdx > 0) {
+            splitLineSpans.push([]);
+          }
+          if (parts[pIdx].length > 0) {
+            splitLineSpans[splitLineSpans.length - 1].push({ ...sp, t: parts[pIdx] });
           }
         }
-      } else {
-        const trimmed = fullParaText.trim();
-        if (trimmed) {
+      }
+
+      for (const rawLineSpans of splitLineSpans) {
+        const lineSpans = [...rawLineSpans];
+        while (lineSpans.length > 0 && !lineSpans[0].t.trim()) {
+          lineSpans.shift();
+        }
+        if (lineSpans.length > 0 && lineSpans[0].t.startsWith(' ')) {
+          lineSpans[0] = { ...lineSpans[0], t: lineSpans[0].t.trimStart() };
+        }
+        while (lineSpans.length > 0 && !lineSpans[lineSpans.length - 1].t.trim()) {
+          lineSpans.pop();
+        }
+        if (lineSpans.length > 0 && lineSpans[lineSpans.length - 1].t.endsWith(' ')) {
+          const last = lineSpans[lineSpans.length - 1];
+          lineSpans[lineSpans.length - 1] = { ...last, t: last.t.trimEnd() };
+        }
+
+        const lineText = lineSpans.map(s => s.t).join('');
+        if (lineText.trim()) {
           lines.push({
-            text: trimmed,
-            spans: autoLinkSpans(paraSpans, issues),
+            text: lineText,
+            spans: autoLinkSpans(lineSpans.length ? lineSpans : [{ t: lineText }], issues),
             namedStyle,
             isBold,
             isBullet,
@@ -359,25 +357,44 @@ export function matchSectionHeader(text: string, currentSection?: SectionKey | n
  * Strips leading typed bullets [•·▪-–—*] and returns clean text and spans.
  */
 export function stripLeadingBullet(line: RawLine): { text: string; spans: Span[]; wasBullet: boolean } {
-  const match = line.text.match(/^[•·▪▸►→\-–—*]\s*(.*)$/);
+  const match = line.text.match(/^([•·▪▸►→\-–—*]\s*)(.*)$/);
   if (match) {
-    const newText = match[1];
-    let charsToRemove = line.text.length - newText.length;
+    const newText = match[2];
     const newSpans: Span[] = [];
+    let strippedBullet = false;
+
     for (const sp of line.spans) {
-      if (charsToRemove > 0) {
-        if (sp.t.length <= charsToRemove) {
-          charsToRemove -= sp.t.length;
+      if (!strippedBullet) {
+        const cleanT = sp.t.replace(/^[•·▪▸►→\-–—*]\s*/, '');
+        if (cleanT !== sp.t) {
+          strippedBullet = true;
+          if (cleanT.length > 0) {
+            newSpans.push({ ...sp, t: cleanT });
+          }
+          continue;
+        } else if (/^\s+$/.test(sp.t)) {
+          // Skip whitespace span before or around bullet
           continue;
         } else {
-          newSpans.push({ ...sp, t: sp.t.substring(charsToRemove) });
-          charsToRemove = 0;
+          newSpans.push(sp);
         }
       } else {
         newSpans.push(sp);
       }
     }
-    return { text: newText, spans: newSpans, wasBullet: true };
+
+    while (newSpans.length > 0 && !newSpans[0].t.trim()) {
+      newSpans.shift();
+    }
+    if (newSpans.length > 0 && newSpans[0].t.startsWith(' ')) {
+      newSpans[0] = { ...newSpans[0], t: newSpans[0].t.trimStart() };
+    }
+
+    return {
+      text: newText.trimStart(),
+      spans: newSpans.length ? newSpans : [{ t: newText.trimStart() }],
+      wasBullet: true,
+    };
   }
   return { text: line.text, spans: line.spans, wasBullet: line.isBullet || false };
 }
@@ -392,16 +409,18 @@ export function extractLabeled(lineText: string, spans: Span[]): { label: string
   const label = lineText.substring(0, colonIndex).trim();
   if (!/^[A-Za-z0-9\s\/\-_()]{1,60}$/.test(label)) return null;
 
-  let charsToRemove = colonIndex + 1;
   const bodySpans: Span[] = [];
+  let foundColon = false;
 
   for (const sp of spans) {
-    if (charsToRemove > 0) {
-      if (sp.t.length <= charsToRemove) {
-        charsToRemove -= sp.t.length;
-      } else {
-        bodySpans.push({ ...sp, t: sp.t.substring(charsToRemove) });
-        charsToRemove = 0;
+    if (!foundColon) {
+      const idx = sp.t.indexOf(':');
+      if (idx !== -1) {
+        foundColon = true;
+        const afterColon = sp.t.substring(idx + 1);
+        if (afterColon.length > 0) {
+          bodySpans.push({ ...sp, t: afterColon });
+        }
       }
     } else {
       bodySpans.push(sp);
